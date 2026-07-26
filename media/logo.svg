@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Brand version of the extension glyph: same gauge-and-spark drawing as
+       activity-bar.svg, but in Claude's coral (#D97757, Anthropic's brand
+       colour, the one the Marketplace gallery banner already uses) instead of
+       currentColor. For README, store pages and anywhere the logo must carry
+       its own colour. The activity-bar file stays monochrome on purpose: the
+       activity bar recolours icons per theme. -->
+  <g fill="none" stroke="#D97757" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+     transform="translate(12 12) scale(1.3) translate(-12 -12)">
+    <!-- the dial: an arc a touch over a semicircle -->
+    <path d="M4 15.5a8 8 0 0 1 16 0"/>
+    <!-- the spark hub, rising from the base of the dial as the needle -->
+    <path d="M12 15.5V8.6"/>
+    <path d="M12 15.5 8.9 12.4"/>
+    <path d="M12 15.5 15.1 12.4"/>
+    <path d="M12 15.5H8.3"/>
+    <path d="M12 15.5H15.7"/>
+  </g>
+</svg>

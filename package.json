@@ -1,8 +1,8 @@
 {
-  "name": "claude-limits",
+  "name": "claude-monitor-vault",
   "displayName": "%ext.displayName%",
   "description": "%ext.description%",
-  "version": "0.52.0",
+  "version": "0.53.0",
   "l10n": "./l10n",
   "publisher": "alexossart",
   "license": "MIT",

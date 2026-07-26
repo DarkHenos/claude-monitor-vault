@@ -267,7 +267,7 @@ side bar contribution point that shipped in that release.
 To install a `.vsix` you built yourself:
 
 ```
-code --install-extension claude-limits-X.Y.Z.vsix
+code --install-extension claude-monitor-vault-X.Y.Z.vsix
 ```
 
 The extension is plain JavaScript with no runtime dependencies.
