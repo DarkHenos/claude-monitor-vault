@@ -11,6 +11,23 @@ The panel lives in the **secondary side bar** by default — on the right, next
 to the chat, like Claude Code itself — and mirrors to the left side bar with
 one click, whichever you prefer.
 
+## Open source, local by design
+
+Every line this extension runs is public:
+**[github.com/DarkHenos/vscode-claude-limits](https://github.com/DarkHenos/vscode-claude-limits)**
+— the repository this very page links to. What you install is what you can read.
+
+- **No telemetry, no server of ours.** The only network call the extension ever
+  makes is to Anthropic's official `api.anthropic.com/api/oauth/usage`
+  endpoint — the same one Claude Code's `/usage` command uses.
+- **Your secrets never leave your machine.** The vault is a local file,
+  encrypted with a key sealed by your OS session. Nobody can read the values:
+  not the author of this extension, not Anthropic, and not Claude itself — by
+  construction, not by promise. The whole mechanism is documented below and
+  auditable in the repository.
+- **MIT-licensed.** Audit it, fork it, build the `.vsix` yourself from source
+  and compare.
+
 Available in five interface languages: English (default), French, Spanish,
 German and Portuguese. The language is chosen in the panel's settings window; it
 can follow your editor or be set on its own, independently of the VS Code display
