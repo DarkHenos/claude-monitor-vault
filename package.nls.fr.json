@@ -1,5 +1,5 @@
 {
-  "ext.displayName": "Claude Monitor",
+  "ext.displayName": "Claude Monitor & Vault",
   "ext.description": "Ton compagnon Claude dans VS Code : suivi en direct de l'usage et des limites de Claude Code (session, hebdomadaire, Opus, Sonnet) dans la barre latérale et la barre d'état, avec alertes de seuil et suivi des crédits payants. Inclut Claude Vault, un coffre local chiffré qui permet à Claude d'utiliser tes clés API et secrets sans jamais les voir, dans les commandes shell et les outils MCP.",
   "view.container": "Claude Monitor",
   "view.panel": "Claude Monitor",

@@ -1,4 +1,4 @@
-# Claude Monitor
+# Claude Monitor & Vault
 
 Two tools in one VS Code extension:
 
