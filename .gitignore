@@ -1,0 +1,3 @@
+# Build artifacts — the .vsix packages are produced by the packaging script
+*.vsix
+*.vsix.bak

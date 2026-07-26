@@ -1,0 +1,365 @@
+{
+  "name": "claude-limits",
+  "displayName": "%ext.displayName%",
+  "description": "%ext.description%",
+  "version": "0.52.0",
+  "l10n": "./l10n",
+  "publisher": "alexossart",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DarkHenos/vscode-claude-limits.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DarkHenos/vscode-claude-limits/issues"
+  },
+  "homepage": "https://github.com/DarkHenos/vscode-claude-limits#readme",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "qna": false,
+  "keywords": [
+    "claude",
+    "claude monitor",
+    "claude code",
+    "claude companion",
+    "anthropic",
+    "rate limit",
+    "usage",
+    "quota",
+    "limits",
+    "credits",
+    "secrets",
+    "vault",
+    "api keys",
+    "mcp"
+  ],
+  "galleryBanner": {
+    "color": "#D97757",
+    "theme": "dark"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "%cap.untrusted%"
+    },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeRateLimit",
+          "title": "%view.container%",
+          "icon": "media/activity-bar.svg"
+        }
+      ],
+      "secondarySideBar": [
+        {
+          "id": "claudeRateLimitAux",
+          "title": "%view.container%",
+          "icon": "media/activity-bar.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeRateLimit": [
+        {
+          "type": "webview",
+          "id": "claudeLimits.panel",
+          "name": "%view.panel%",
+          "when": "claudeLimits.inPrimary"
+        },
+        {
+          "id": "claudeLimits.gauge",
+          "name": "%view.panel%",
+          "when": "!claudeLimits.inPrimary"
+        }
+      ],
+      "claudeRateLimitAux": [
+        {
+          "type": "webview",
+          "id": "claudeLimits.panelAux",
+          "name": "%view.panel%",
+          "when": "!claudeLimits.inPrimary"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeLimits.open",
+        "category": "%cat.limits%",
+        "title": "%cmd.open%",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "claudeLimits.maximize",
+        "category": "%cat.limits%",
+        "title": "%cmd.maximize%",
+        "icon": "$(screen-full)"
+      },
+      {
+        "command": "claudeLimits.refresh",
+        "category": "%cat.limits%",
+        "title": "%cmd.refresh%",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeLimits.moveToSecondary",
+        "category": "%cat.limits%",
+        "title": "%cmd.moveToSecondary%",
+        "icon": "$(layout-sidebar-right)"
+      },
+      {
+        "command": "claudeLimits.moveToPrimary",
+        "category": "%cat.limits%",
+        "title": "%cmd.moveToPrimary%",
+        "icon": "$(layout-sidebar-left)"
+      },
+      {
+        "command": "claudeVault.show",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.show%",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "claudeVault.add",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.add%",
+        "icon": "$(add)"
+      },
+      {
+        "command": "claudeVault.delete",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.delete%",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "claudeVault.setTtl",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.setTtl%",
+        "icon": "$(clock)"
+      },
+      {
+        "command": "claudeVault.copyMarker",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.copyMarker%",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "claudeVault.reveal",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.reveal%",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "claudeVault.toggleMcp",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.toggleMcp%",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "claudeVault.actions",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.actions%",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "claudeVault.settings",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.settings%",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "claudeVault.audit",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.audit%",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "claudeVault.connect",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.connect%",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "claudeVault.revokeAll",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.revokeAll%",
+        "icon": "$(alert)"
+      },
+      {
+        "command": "claudeVault.details",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.details%",
+        "icon": "$(info)"
+      },
+      {
+        "command": "claudeVault.setNote",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.setNote%",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "claudeVault.autoApprove",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.autoApprove%",
+        "icon": "$(unlock)"
+      },
+      {
+        "command": "claudeVault.mcpSnippet",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.mcpSnippet%",
+        "icon": "$(server)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudeLimits.maximize",
+          "when": "view == claudeLimits.panelAux",
+          "group": "navigation@0"
+        },
+        {
+          "command": "claudeVault.settings",
+          "when": "view == claudeLimits.panel || view == claudeLimits.panelAux",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeLimits.refresh",
+          "when": "view == claudeLimits.panel || view == claudeLimits.panelAux || view == claudeLimits.gauge",
+          "group": "navigation@2"
+        },
+        {
+          "command": "claudeLimits.moveToSecondary",
+          "when": "view == claudeLimits.panel",
+          "group": "navigation@3"
+        },
+        {
+          "command": "claudeLimits.moveToPrimary",
+          "when": "view == claudeLimits.panelAux || view == claudeLimits.gauge",
+          "group": "navigation@3"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "claudeVault.copyMarker",
+          "when": "webviewSection == 'vaultKey'",
+          "group": "1_usage@1"
+        },
+        {
+          "command": "claudeVault.details",
+          "when": "webviewSection == 'vaultKey'",
+          "group": "1_usage@0"
+        },
+        {
+          "command": "claudeVault.setNote",
+          "when": "webviewSection == 'vaultKey'",
+          "group": "2_acces@0"
+        },
+        {
+          "command": "claudeVault.setTtl",
+          "when": "webviewSection == 'vaultKey'",
+          "group": "1_usage@2"
+        },
+        {
+          "command": "claudeVault.toggleMcp",
+          "when": "webviewSection == 'vaultKey'",
+          "group": "2_acces@1"
+        },
+        {
+          "command": "claudeVault.reveal",
+          "when": "webviewSection == 'vaultKey'",
+          "group": "2_acces@2"
+        },
+        {
+          "command": "claudeVault.delete",
+          "when": "webviewSection == 'vaultKey'",
+          "group": "3_danger@1"
+        },
+        {
+          "command": "claudeVault.mcpSnippet",
+          "when": "webviewSection == 'vaultKey'",
+          "group": "2_acces@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "%cat.limits%",
+      "properties": {
+        "claudeLimits.pollSeconds": {
+          "type": "number",
+          "default": 210,
+          "minimum": 120,
+          "description": "%cfg.pollSeconds%"
+        },
+        "claudeLimits.alerts": {
+          "type": "boolean",
+          "default": true,
+          "description": "%cfg.alerts%"
+        },
+        "claudeLimits.statusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "%cfg.statusBar%"
+        },
+        "claudeLimits.badge": {
+          "type": "boolean",
+          "default": true,
+          "description": "%cfg.badge%"
+        },
+        "claudeLimits.statusBarPosition": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right"
+          ],
+          "default": "right",
+          "description": "%cfg.statusBarPosition%"
+        },
+        "claudeLimits.statusBarStyle": {
+          "type": "string",
+          "enum": [
+            "prominent",
+            "classic"
+          ],
+          "default": "prominent",
+          "description": "%cfg.statusBarStyle%"
+        },
+        "claudeLimits.statusBarWeek": {
+          "type": "boolean",
+          "default": false,
+          "description": "%cfg.statusBarWeek%"
+        },
+        "claudeLimits.pauseWhenExhausted": {
+          "type": "boolean",
+          "default": true,
+          "description": "%cfg.pauseWhenExhausted%"
+        },
+        "claudeLimits.showCredits": {
+          "type": "boolean",
+          "default": true,
+          "description": "%cfg.showCredits%"
+        },
+        "claudeLimits.location": {
+          "type": "string",
+          "enum": [
+            "sidebar",
+            "secondarySidebar"
+          ],
+          "default": "secondarySidebar",
+          "description": "%cfg.location%"
+        }
+      }
+    }
+  }
+}
