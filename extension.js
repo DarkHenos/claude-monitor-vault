@@ -460,9 +460,9 @@ function activate(context) {
   // The activity-bar icon must survive the panel's move to the secondary
   // side bar, so a feather-weight tree view takes the panel's slot on the
   // left (the when-clauses swap them): same icon, the percentage badge, one
-  // row per limit, and any click reopens the real panel. A webview cannot
-  // hold this post: its badge only exists once the view has been opened,
-  // a TreeView's exists from creation.
+  // row per limit, and any click reopens the real panel. A TreeView's badge
+  // exists from creation, so it is the only reliable carrier in the sidebar
+  // (a webview's badge only exists once the view has been opened).
   const gaugeEmitter = new vscode.EventEmitter();
   const gaugeView = vscode.window.createTreeView('claudeLimits.gauge', {
     treeDataProvider: {
@@ -479,18 +479,6 @@ function activate(context) {
     }
   });
   context.subscriptions.push(gaugeView, gaugeEmitter);
-
-  // Clicking the activity-bar icon while the panel lives on the right acts as
-  // the mirror button: the panel comes back to the left in place of the gauge.
-  // There is no API for the icon click itself, but the gauge only ever becomes
-  // visible through it, so its visibility IS the click. The boot grace covers
-  // the restored layout surfacing the gauge at startup without any click.
-  const bootAt = Date.now();
-  context.subscriptions.push(gaugeView.onDidChangeVisibility(() => {
-    if (!gaugeView.visible || !inSecondary() || movePending) return;
-    if (Date.now() - bootAt < 3000) return;
-    moveTo('sidebar');
-  }));
 
   // Alignment is fixed at creation, so a change of side means rebuilding the
   // item. buildStatus is idempotent: it only recreates when the side actually
@@ -646,7 +634,8 @@ function activate(context) {
       // activity-bar gauge already carries it, showing it twice says nothing.
       webviewView.badge = inSecondary() ? undefined : badge;
     }
-    gaugeView.description = head;
+    // The gauge is the badge carrier in every location: the webview's badge
+    // only exists once opened, so the gauge carries it unconditionally.
     gaugeView.badge = badge;
     gaugeEmitter.fire(undefined);
   }
