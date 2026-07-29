@@ -74,49 +74,6 @@ jobs:
           security default-keychain -s ci.keychain
           security unlock-keychain -p ci-pass ci.keychain
           security set-keychain-settings ci.keychain
-      # Raw probe of the exact interaction the vault relies on, so a failure
-      # names itself instead of hiding behind a fallback.
-      - name: Probe the security interaction
-        continue-on-error: true
-        run: |
-          set +e
-          echo '--- interactive add (-i), the argv-free path ---'
-          printf 'add-generic-password -U -s claude-vault -a probe -D "Claude Vault master key" -w "QUJD"\n' | security -i
-          echo "exit=$?"
-          echo '--- read back ---'
-          security find-generic-password -s claude-vault -a probe -w
-          echo "exit=$?"
-          security delete-generic-password -s claude-vault -a probe >/dev/null 2>&1
-          exit 0
-      # The shell path works; the Node path timed out. Isolate which call hangs.
-      - name: Probe the same interaction from Node
-        continue-on-error: true
-        run: |
-          node -e "
-            const { spawnSync } = require('child_process');
-            const b64 = require('crypto').randomBytes(32).toString('base64');
-            const show = (label, r) => console.log(label,
-              '| status=' + r.status,
-              '| error=' + (r.error ? r.error.code || r.error.message : 'none'),
-              '| out=' + JSON.stringify(String(r.stdout || '').slice(0, 60)),
-              '| err=' + JSON.stringify(String(r.stderr || '').slice(0, 120)));
-            const t0 = Date.now();
-            show('add -i        ', spawnSync('security', ['-i'], {
-              input: 'add-generic-password -U -s claude-vault -a nodeprobe -D \"Claude Vault master key\" -w \"' + b64 + '\"\n',
-              encoding: 'utf8', timeout: 20000 }));
-            console.log('   elapsed ' + (Date.now() - t0) + ' ms');
-            const t1 = Date.now();
-            show('find (input=\"\")', spawnSync('security',
-              ['find-generic-password', '-s', 'claude-vault', '-a', 'nodeprobe', '-w'],
-              { input: '', encoding: 'utf8', timeout: 20000 }));
-            console.log('   elapsed ' + (Date.now() - t1) + ' ms');
-            const t2 = Date.now();
-            show('find (no input)', spawnSync('security',
-              ['find-generic-password', '-s', 'claude-vault', '-a', 'nodeprobe', '-w'],
-              { encoding: 'utf8', timeout: 20000 }));
-            console.log('   elapsed ' + (Date.now() - t2) + ' ms');
-            spawnSync('security', ['delete-generic-password', '-s', 'claude-vault', '-a', 'nodeprobe'], { stdio: 'ignore' });
-          "
       - name: The login keychain holds the master key
         env:
           EXPECT_MODE: keychain

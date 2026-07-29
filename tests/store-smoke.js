@@ -14,14 +14,22 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-// A throwaway home, set BEFORE core.js is required: it reads os.homedir() once,
-// at load time, to place the vault directory.
+// A throwaway vault directory, obtained by intercepting os.homedir() for
+// core.js only — NOT by moving $HOME. `security` resolves the keychain search
+// list through $HOME, so pointing it at an empty temp directory makes it hang
+// waiting for an interaction it cannot show: the run then times out and blames
+// the vault for a fault of the harness.
+const Module = require('module');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-vault-ci-'));
-process.env.HOME = home;
-process.env.USERPROFILE = home;
 fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
 
+const origLoad = Module._load;
+Module._load = function (request) {
+  if (request === 'os') return Object.assign(Object.create(os), { homedir: () => home });
+  return origLoad.apply(this, arguments);
+};
 const vault = require('../vault/core.js');
+Module._load = origLoad;
 
 const NAME = 'CI_SMOKE_KEY';
 const VALUE = 'valeur-' + process.pid + '-' + Math.floor(process.uptime() * 1e6);
