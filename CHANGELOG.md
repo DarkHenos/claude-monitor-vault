@@ -2,6 +2,18 @@
 
 All notable changes to **Claude Monitor & Vault**.
 
+## 0.58.1 — 2026-07-29
+
+- **Linux: the vault now reaches the OS keyring when the extension host runs
+  with a stripped environment** — started from a desktop launcher, a systemd
+  unit or an SSH session. libsecret talks to the Secret Service over the D-Bus
+  *session* bus, and GDBus only ever reads `DBUS_SESSION_BUS_ADDRESS`. When that
+  variable is missing, the vault now points at the standard systemd user bus,
+  `$XDG_RUNTIME_DIR/bus`, provided the socket is genuinely there. Until now a
+  perfectly healthy keyring simply went unused and the master key silently
+  settled for file permissions — safe, but less protected than it should have
+  been. An environment that already carries the variable is left untouched.
+
 ## 0.58.0 — 2026-07-29
 
 First public release on the Visual Studio Marketplace.

@@ -111,12 +111,33 @@ function equalCT(a, b) {
 // Every OS helper below receives its payload on STDIN, never on argv: command
 // lines are readable by any process of the session, so a secret passed as an
 // argument would leak for the lifetime of the call.
-function runIn(cmd, args, input) {
-  const r = spawnSync(cmd, args,
-    { input, encoding: 'utf8', windowsHide: true, timeout: 20000 });
+function runIn(cmd, args, input, env) {
+  const opts = { input, encoding: 'utf8', windowsHide: true, timeout: 20000 };
+  if (env) opts.env = env;
+  const r = spawnSync(cmd, args, opts);
   if (r.error) throw fail('{0} unavailable: {1}', cmd, r.error.message);
   if (r.status !== 0) throw fail('{0} failed: {1}', cmd, String(r.stderr || '').trim());
   return String(r.stdout || '').trim();
+}
+
+// libsecret reaches the Secret Service over the D-Bus SESSION bus, and GDBus
+// only ever looks at DBUS_SESSION_BUS_ADDRESS. A VS Code extension host started
+// from a desktop launcher or a systemd unit can carry a stripped environment:
+// secret-tool then fails, and the vault quietly settles for file permissions
+// even though a perfectly good keyring is running. $XDG_RUNTIME_DIR/bus is the
+// standard systemd user bus, so we point at it when the variable is missing and
+// the socket is genuinely there.
+function busEnv() {
+  if (process.platform !== 'linux' || process.env.DBUS_SESSION_BUS_ADDRESS) return null;
+  const dir = process.env.XDG_RUNTIME_DIR ||
+    (typeof process.getuid === 'function' ? '/run/user/' + process.getuid() : null);
+  if (!dir) return null;
+  // Built with a literal '/': this is a unix socket path, it must not depend on
+  // the host separator that path.join would pick.
+  const sock = String(dir).replace(/\/+$/, '') + '/bus';
+  try { if (!fs.statSync(sock).isSocket()) return null; }
+  catch (e) { return null; }
+  return Object.assign({}, process.env, { DBUS_SESSION_BUS_ADDRESS: 'unix:path=' + sock });
 }
 
 // --- Windows: DPAPI, CurrentUser scope. The wrapped blob lives in the key file.
@@ -184,7 +205,7 @@ function secretToolStore(buf) {
   const payload = b64(buf);
   runIn('secret-tool',
     ['store', '--label=Claude Vault master key', 'service', KEYRING_SERVICE, 'account', KEYRING_ACCOUNT],
-    payload);
+    payload, busEnv());
   if (keyringStoresInClear(payload)) {
     throw fail('the keyring is unlocked with an empty password and stores secrets unencrypted');
   }
@@ -192,7 +213,7 @@ function secretToolStore(buf) {
 
 function secretToolLoad() {
   const out = runIn('secret-tool',
-    ['lookup', 'service', KEYRING_SERVICE, 'account', KEYRING_ACCOUNT], '');
+    ['lookup', 'service', KEYRING_SERVICE, 'account', KEYRING_ACCOUNT], '', busEnv());
   if (!out) throw fail('no entry in the keyring');
   return unb64(out);
 }
