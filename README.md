@@ -14,7 +14,7 @@ one click, whichever you prefer.
 ## Open source, local by design
 
 Every line this extension runs is public:
-**[github.com/DarkHenos/vscode-claude-limits](https://github.com/DarkHenos/vscode-claude-limits)**
+**[github.com/DarkHenos/claude-monitor-vault](https://github.com/DarkHenos/claude-monitor-vault)**
 — the repository this very page links to. What you install is what you can read.
 
 - **No telemetry, no server of ours.** The only network call the extension ever

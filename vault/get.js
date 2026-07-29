@@ -32,12 +32,14 @@ try {
   try { vault.notePending(null, [rec.name], rec.session, { [rec.name]: value }); }
   catch (e) { /* redaction is a safety net, never block the real use for it */ }
 
+  // writeSync, not process.stdout.write: writes to a pipe are ASYNCHRONOUS on
+  // Windows, so the process.exit(0) below could cut a value larger than the
+  // pipe buffer and hand the command a partial secret.
   if (rec.mode === 'file') {
     // ssh -i, certificate, service account: a path is expected, not the value.
-    const f = vault.materialize(entry.name, value);
-    process.stdout.write(f);
+    require('fs').writeSync(1, vault.materialize(entry.name, value));
   } else {
-    process.stdout.write(value);
+    require('fs').writeSync(1, value);
   }
 
   if (burned) process.stderr.write('claude-vault: ' + entry.name + ' burned after use\n');

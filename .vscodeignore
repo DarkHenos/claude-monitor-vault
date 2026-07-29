@@ -1,3 +1,8 @@
 *.vsix
 *.bak
 .vscodeignore
+.gitignore
+.git/**
+node_modules/**
+package-lock.json
+**/*.tmp

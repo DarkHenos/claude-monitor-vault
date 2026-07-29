@@ -20,9 +20,13 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+const { execFile } = require('child_process');
+
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const UA = 'claude-limits-vscode/0.9';
-const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+// Claude Code honours CLAUDE_CONFIG_DIR. Hard-coding ~/.claude would read a
+// token, and write a shared cache, in a directory Claude Code never looks at.
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const CREDS_PATH = path.join(CLAUDE_DIR, '.credentials.json');
 // cache shared between all VSCode windows: a single real request feeds everyone
 const CACHE_PATH = path.join(CLAUDE_DIR, 'claude-limits-cache.json');
@@ -72,24 +76,68 @@ function cfg() {
 // The token is read from disk again only if the file changed (OAuth rotation).
 let credKey = '';
 let credToken = '';
-function getToken() {
-  const st = fs.statSync(CREDS_PATH);
-  const key = st.mtimeMs + ':' + st.size;
-  if (key === credKey && credToken) return credToken;
-  const raw = JSON.parse(fs.readFileSync(CREDS_PATH, 'utf8'));
+let credAt = 0;
+const KEYCHAIN_TTL_MS = 300000;   // a keychain item has no mtime to watch
+
+function tokenFromJson(txt) {
+  const raw = JSON.parse(txt);
   const tok = raw && raw.claudeAiOauth && raw.claudeAiOauth.accessToken;
   if (!tok) throw new Error('token absent');
-  credKey = key;
-  credToken = tok;
   return tok;
 }
 
-function fetchUsage() {
+// On macOS, Claude Code keeps its OAuth credentials in the login keychain
+// rather than in ~/.claude/.credentials.json, so without this the extension
+// never shows a single figure on a Mac. Read asynchronously on purpose: the
+// first access by a binary that did not create the item raises an
+// authorisation dialog, and a spawnSync would freeze the extension host for as
+// long as it stayed on screen. No -a: the item's account does not have to match
+// the local user name.
+function tokenFromKeychain() {
   return new Promise((resolve, reject) => {
-    let token;
-    try { token = getToken(); }
-    catch (e) { return reject(new Error(i18n.t('credentials not found: sign in to Claude Code'))); }
+    execFile('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
+      { timeout: 20000, encoding: 'utf8' }, (err, stdout, stderr) => {
+        if (err) {
+          return reject(new Error(i18n.t('macOS keychain refused the Claude Code credentials: {0}',
+            String(stderr || err.message).trim())));
+        }
+        try { resolve(tokenFromJson(String(stdout || '').trim())); }
+        catch (e) { reject(e); }
+      });
+  });
+}
 
+// The file stays the primary source on every platform: a headless Mac, an SSH
+// session or a CI runner makes Claude Code itself fall back to it.
+async function getToken() {
+  let st = null;
+  try { st = fs.statSync(CREDS_PATH); } catch (e) { st = null; }
+  if (st) {
+    const key = st.mtimeMs + ':' + st.size;
+    if (key === credKey && credToken) return credToken;
+    const tok = tokenFromJson(fs.readFileSync(CREDS_PATH, 'utf8'));
+    credKey = key; credToken = tok; credAt = Date.now();
+    return tok;
+  }
+  if (process.platform !== 'darwin') throw new Error('no credentials file');
+  if (credKey === 'keychain' && credToken && Date.now() - credAt < KEYCHAIN_TTL_MS) return credToken;
+  const tok = await tokenFromKeychain();
+  credKey = 'keychain'; credToken = tok; credAt = Date.now();
+  return tok;
+}
+
+async function fetchUsage() {
+  let token;
+  try {
+    token = await getToken();
+  } catch (e) {
+    // A keychain that refuses access is not the same problem as a missing
+    // login, and telling the user to sign in again would send them nowhere.
+    throw /keychain/i.test(String(e && e.message))
+      ? e
+      : new Error(i18n.t('credentials not found: sign in to Claude Code'));
+  }
+  return new Promise((resolve, reject) => {
     let done = false;
     const ok = v => { if (!done) { done = true; resolve(v); } };
     const ko = e => { if (!done) { done = true; reject(e); } };
@@ -346,11 +394,14 @@ function writeCache(rows, alerted, credits) {
   const obj = { v: 2, at, rows: packRows(rows), cr: credits || null, alerted, data: legacyData(rows) };
   const txt = JSON.stringify(obj);
   try {
-    fs.writeFileSync(CACHE_TMP, txt);
+    // 0600 explicitly: left to the default umask this lands in 0644 on
+    // macOS/Linux, readable by every account on the machine, whereas on Windows
+    // it inherits the profile ACL. The rest of ~/.claude is user-only.
+    fs.writeFileSync(CACHE_TMP, txt, { mode: 0o600 });
     fs.renameSync(CACHE_TMP, CACHE_PATH);
   } catch (e) {
     try { fs.unlinkSync(CACHE_TMP); } catch (_) { /* nothing to clean up */ }
-    try { fs.writeFileSync(CACHE_PATH, txt); } catch (_) { return at; }
+    try { fs.writeFileSync(CACHE_PATH, txt, { mode: 0o600 }); } catch (_) { return at; }
   }
   // realign the mtime filter so we don't re read our own write
   cacheVal = obj;
@@ -437,9 +488,7 @@ function activate(context) {
   }
   applyLocation();
 
-  let movePending = false;
   async function moveTo(loc) {
-    movePending = true;
     try {
       await vscode.workspace.getConfiguration('claudeLimits')
         .update('location', loc, vscode.ConfigurationTarget.Global);
@@ -452,9 +501,7 @@ function activate(context) {
         vscode.commands.executeCommand('workbench.action.closeSidebar');
       }
       vscode.commands.executeCommand(activePanelId() + '.focus');
-    } finally {
-      setTimeout(() => { movePending = false; }, 1500);
-    }
+    } catch (e) { /* the location is a preference: never break on it */ }
   }
 
   // The activity-bar icon must survive the panel's move to the secondary
@@ -510,7 +557,9 @@ function activate(context) {
   function onWebviewMessage(m) {
     if (!m || !m.type) return;
     switch (m.type) {
-      case 'refresh': return poll(true);
+      // render() explicitly: poll() only fetches, so without it the badge, the
+      // status bar and the gauge stayed frozen until the next tick.
+      case 'refresh': return poll(true).then(() => { render(); schedule(); });
       case 'create': return vault && vault.createFromPanel(m);
       case 'add': return vscode.commands.executeCommand('claudeVault.add');
       case 'del': return vscode.commands.executeCommand('claudeVault.delete', m.name);
@@ -618,8 +667,8 @@ function activate(context) {
       // number, so it cannot carry a "%" sign, no API can. We show the session
       // percentage as the bare number (67 for 67%) and put the "%" in the
       // tooltip, the only place text is allowed. The session (5h) leads; the
-      // weekly figure stands in only if there is no session row. Off by default,
-      // enabled from the settings.
+      // weekly figure stands in only if there is no session row. On by default,
+      // switched off from the settings.
       if (cfg().badge) {
         const lead = s5 || w7;
         if (lead) {
@@ -630,12 +679,13 @@ function activate(context) {
     }
     if (webviewView) {
       webviewView.description = head;
-      // The badge is a left-side signal only: in the secondary side bar the
-      // activity-bar gauge already carries it, showing it twice says nothing.
-      webviewView.badge = inSecondary() ? undefined : badge;
+      // Never on the webview. In the primary side bar the panel and the gauge
+      // share the claudeRateLimit container, and VS Code SUMS the numeric
+      // badges of a container's views: carrying it on both showed 90 for 45 %.
+      webviewView.badge = undefined;
     }
-    // The gauge is the badge carrier in every location: the webview's badge
-    // only exists once opened, so the gauge carries it unconditionally.
+    // The gauge is the sole carrier, in every location: its badge exists from
+    // view creation, unlike a webview's which only exists once opened.
     gaugeView.badge = badge;
     gaugeEmitter.fire(undefined);
   }
@@ -809,7 +859,11 @@ function activate(context) {
   function startWatch() {
     try {
       watcher = fs.watch(CLAUDE_DIR, (event, fname) => {
-        if (fname !== path.basename(CACHE_PATH)) return;   // very active directory: filter first
+        // Node does not guarantee a filename on macOS (FSEvents coalesces
+        // events): dropping a null one would silently disable instant sync
+        // between windows there. A null means "something moved", so we look.
+        if (fname !== null && fname !== undefined
+            && fname !== path.basename(CACHE_PATH)) return;   // very active directory: filter first
         if (watchDebounce) clearTimeout(watchDebounce);
         watchDebounce = setTimeout(() => {
           watchDebounce = null;

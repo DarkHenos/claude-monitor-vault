@@ -22,7 +22,16 @@ const vault = require('./core.js');
 const GET_JS = path.join(__dirname, 'get.js');
 const LIST_JS = path.join(__dirname, 'list.js');
 const ADD_JS = path.join(__dirname, 'add.js');
-const NODE = process.execPath;
+// The installer resolved a real interpreter and recorded it in the bridge.
+// Deriving it from our own process.execPath would propagate the Electron binary
+// into every rewritten command whenever this hook itself runs under Electron.
+const NODE = (function () {
+  try {
+    const v = JSON.parse(require('fs').readFileSync(path.join(__dirname, 'version.json'), 'utf8'));
+    if (v && typeof v.node === 'string' && v.node) return v.node;
+  } catch (e) { /* not installed through the bridge: fall back */ }
+  return process.execPath;
+})();
 
 // $KEY_NAME in the prompt. Rejects $1, $HOME (lowercase), ${...}.
 // A "\" before it ($$ or \$) neutralizes detection.

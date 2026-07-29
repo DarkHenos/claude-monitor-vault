@@ -17,17 +17,36 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('child_process');
 
-const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+// Claude Code honours CLAUDE_CONFIG_DIR; writing hooks into a hard-coded
+// ~/.claude would put them in a settings.json Claude Code never reads, and the
+// panel would report "connected" while nothing ever fires.
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const BRIDGE_DIR = path.join(CLAUDE_DIR, 'claude-vault-bridge');
 const SETTINGS = path.join(CLAUDE_DIR, 'settings.json');
 const MARKER = 'claude-vault-bridge';     // lets us find OUR entries
 const FILES = ['core.js', 'hook.js', 'get.js', 'list.js', 'add.js', 'env.js', 'mcp-proxy.js'];
+const SHIMS = { win32: 'node-shim.cmd', posix: 'node-shim.sh' };
 const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse'];
 
-function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
-  catch (e) { return fallback; }
+function readJson(file, fallback, strict) {
+  let txt;
+  try { txt = fs.readFileSync(file, 'utf8'); }
+  catch (e) { return fallback; }              // absent: the fallback is legitimate
+  // A UTF-8 BOM — PowerShell Out-File/Set-Content, older Notepad — makes
+  // JSON.parse throw on an otherwise perfectly valid file.
+  if (txt.charCodeAt(0) === 0xFEFF) txt = txt.slice(1);
+  try { return JSON.parse(txt); }
+  catch (e) {
+    // Silently falling back to {} here would rewrite settings.json with our
+    // hooks alone and drop the user's permissions, model and plugins. Refusing
+    // is the only safe answer on a file we cannot understand.
+    if (!strict) return fallback;
+    const err = new Error('cannot read ' + path.basename(file) + ': the file is not valid JSON');
+    err.unparseable = true;
+    throw err;
+  }
 }
 
 function writeJson(file, obj) {
@@ -49,13 +68,60 @@ function syncBridge(srcDir, version) {
     try { b = fs.readFileSync(dst, 'utf8'); } catch (e) { /* missing */ }
     if (a !== b) { fs.writeFileSync(dst, a, 'utf8'); changed++; }
   }
-  writeJson(path.join(BRIDGE_DIR, 'version.json'), { version, at: new Date().toISOString() });
+  // The interpreter is recorded here so hook.js can rewrite commands with the
+  // same one instead of re-deriving it from its own process.execPath.
+  writeJson(path.join(BRIDGE_DIR, 'version.json'),
+    { version, at: new Date().toISOString(), node: nodeExec() });
   return changed;
+}
+
+// process.execPath inside a VS Code extension host is the ELECTRON binary, not
+// node. A hook or MCP command built from it launches a second editor window on
+// macOS and Linux, and only seems to work on Windows because the extension host
+// leaks ELECTRON_RUN_AS_NODE into what it spawns. Without that variable the
+// hook prints nothing and exits 0, so the guard and the {{vault:NAME}}
+// substitution become silent no-ops. We resolve a real interpreter instead.
+function realNode() {
+  const exe = path.basename(process.execPath).toLowerCase();
+  if (exe === 'node' || exe === 'node.exe') return process.execPath;
+  const probe = process.platform === 'win32'
+    ? spawnSync('where', ['node'], { encoding: 'utf8', windowsHide: true })
+    : spawnSync('/bin/sh', ['-lc', 'command -v node'], { encoding: 'utf8' });
+  if (!probe.error && probe.status === 0) {
+    const first = String(probe.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0];
+    if (first && fs.existsSync(first)) return first;
+  }
+  return null;
+}
+
+// No node on PATH. Electron behaves exactly like node once ELECTRON_RUN_AS_NODE
+// is set, but neither a hook command string nor an MCP entry can carry an
+// environment variable, so we write a drop-in launcher that sets it itself.
+function writeLauncher() {
+  if (!fs.existsSync(BRIDGE_DIR)) fs.mkdirSync(BRIDGE_DIR, { recursive: true, mode: 0o700 });
+  if (process.platform === 'win32') {
+    const p = path.join(BRIDGE_DIR, SHIMS.win32);
+    fs.writeFileSync(p, '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"' +
+      process.execPath + '" %*\r\n', 'utf8');
+    return p;
+  }
+  const p = path.join(BRIDGE_DIR, SHIMS.posix);
+  fs.writeFileSync(p, '#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "' +
+    process.execPath + '" "$@"\n', 'utf8');
+  try { fs.chmodSync(p, 0o700); } catch (e) { /* best effort */ }
+  return p;
+}
+
+// Cached per process: the PATH probe spawns a shell.
+let _node = null;
+function nodeExec() {
+  if (!_node) _node = realNode() || writeLauncher();
+  return _node;
 }
 
 function hookCommand() {
   // Quotes are required: paths such as "Program Files", "developpement web"...
-  return '"' + process.execPath + '" "' + path.join(BRIDGE_DIR, 'hook.js') + '"';
+  return '"' + nodeExec() + '" "' + path.join(BRIDGE_DIR, 'hook.js') + '"';
 }
 
 function isOurs(entry) {
@@ -72,7 +138,7 @@ function stripOurs(list) {
 
 function install(srcDir, version) {
   const changed = syncBridge(srcDir, version);
-  const s = readJson(SETTINGS, {});
+  const s = readJson(SETTINGS, {}, true);   // strict: never overwrite what we failed to parse
 
   // Timestamped backup before any modification.
   if (fs.existsSync(SETTINGS)) {
@@ -101,8 +167,13 @@ function uninstall() {
     if (!Object.keys(s.hooks).length) delete s.hooks;
     writeJson(SETTINGS, s);
   }
-  try { for (const f of FILES.concat(['version.json'])) fs.unlinkSync(path.join(BRIDGE_DIR, f)); }
-  catch (e) { /* already clean */ }
+  // Unwrap the MCP servers BEFORE deleting the proxy they point at: left alone,
+  // every wrapped server would keep launching a mcp-proxy.js that no longer
+  // exists and would simply stop starting.
+  try { unwrapMcpServers(); } catch (e) { /* never block the uninstall */ }
+  for (const f of FILES.concat(['version.json', SHIMS.win32, SHIMS.posix])) {
+    try { fs.unlinkSync(path.join(BRIDGE_DIR, f)); } catch (e) { /* already gone */ }
+  }
   try { fs.rmdirSync(BRIDGE_DIR); } catch (e) { /* not empty, never mind */ }
   return true;
 }
@@ -130,7 +201,7 @@ const WRAP_MARK = '_claudeVaultWrapped';
 
 function proxyLauncher(id) {
   return {
-    command: process.execPath,
+    command: nodeExec(),
     args: [path.join(BRIDGE_DIR, 'mcp-proxy.js'), '--name', String(id), '--'],
     marker: WRAP_MARK
   };
@@ -206,7 +277,7 @@ function wrapMcpServers() {
     try { config = JSON.parse(raw); } catch (e) { return { wrapped: [], error: 'unparseable' }; }
     const proxyPath = path.join(BRIDGE_DIR, 'mcp-proxy.js');
     const before = JSON.stringify(config);
-    const { wrapped } = wrapServers(config, process.execPath, proxyPath);
+    const { wrapped } = wrapServers(config, nodeExec(), proxyPath);
     if (JSON.stringify(config) === before) return { wrapped: [] };   // nothing changed
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -217,6 +288,30 @@ function wrapMcpServers() {
     return { wrapped };
   } catch (e) {
     return { wrapped: [], error: e.message };
+  }
+}
+
+// Symmetric to wrapMcpServers, and called by uninstall(): without it every
+// wrapped server keeps pointing at a mcp-proxy.js that has just been deleted,
+// and simply stops starting.
+function unwrapMcpServers() {
+  try {
+    if (!fs.existsSync(CLAUDE_JSON)) return { restored: [], skipped: true };
+    let config;
+    try { config = JSON.parse(fs.readFileSync(CLAUDE_JSON, 'utf8')); }
+    catch (e) { return { restored: [], error: 'unparseable' }; }
+    const before = JSON.stringify(config);
+    const { restored } = unwrapServers(config);
+    if (JSON.stringify(config) === before) return { restored: [] };   // nothing wrapped
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.copyFileSync(CLAUDE_JSON, path.join(os.homedir(), '.claude.json.vault-backup-' + stamp));
+    const tmp = CLAUDE_JSON + '.vault-tmp';
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
+    fs.renameSync(tmp, CLAUDE_JSON);
+    return { restored };
+  } catch (e) {
+    return { restored: [], error: e.message };
   }
 }
 
@@ -238,5 +333,5 @@ function status(version) {
 
 module.exports = {
   install, uninstall, status, BRIDGE_DIR, SETTINGS, EVENTS,
-  wrapServers, unwrapServers, wrapMcpServers, CLAUDE_JSON, WRAP_MARK
+  wrapServers, unwrapServers, wrapMcpServers, unwrapMcpServers, CLAUDE_JSON, WRAP_MARK
 };

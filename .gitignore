@@ -1,3 +1,8 @@
 # Build artifacts — the .vsix packages are produced by the packaging script
 *.vsix
 *.vsix.bak
+
+# Dev dependencies only: the extension itself ships with zero runtime
+# dependency, so nothing here belongs in the repository (97 MB of it).
+node_modules/
+package-lock.json

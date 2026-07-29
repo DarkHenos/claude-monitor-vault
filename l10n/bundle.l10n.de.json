@@ -179,6 +179,13 @@
   "master key unreachable: {0}": "Hauptschlüssel nicht erreichbar: {0}",
   "DPAPI unavailable: the master key is stored unprotected on disk": "DPAPI nicht verfügbar: Der Hauptschlüssel liegt ungeschützt auf der Festplatte",
   "master key protected only by file permissions (0600)": "Hauptschlüssel nur durch Dateirechte geschützt (0600)",
+  "{0} unavailable: {1}": "{0} nicht verfügbar: {1}",
+  "{0} failed: {1}": "{0} fehlgeschlagen: {1}",
+  "no entry in the keyring": "kein Eintrag im Schlüsselbund",
+  "round trip mismatch": "Hin- und Rückweg liefern nicht denselben Schlüssel",
+  "cannot store the master key ({0})": "Hauptschlüssel kann nicht gespeichert werden ({0})",
+  "macOS keychain unavailable: the master key is protected only by file permissions (0600)": "macOS-Schlüsselbund nicht verfügbar: Der Hauptschlüssel ist nur durch Dateirechte geschützt (0600)",
+  "no keyring available (install libsecret-tools): the master key is protected only by file permissions (0600)": "kein Schlüsselbund verfügbar (libsecret-tools installieren): Der Hauptschlüssel ist nur durch Dateirechte geschützt (0600)",
   "vault tampered with: the file signature does not match": "Tresor manipuliert: Die Dateisignatur stimmt nicht",
   "unknown key: {0}": "unbekannter Schlüssel: {0}",
   "expired key: {0}": "abgelaufener Schlüssel: {0}",
@@ -202,8 +209,6 @@
   "{0} s": "{0} s",
   "Claude Vault: connection to Claude Code updated": "Claude Vault: Verbindung zu Claude Code aktualisiert",
   "Claude Vault: connected to Claude Code, restart a session to activate the hooks": "Claude Vault: mit Claude Code verbunden, Sitzung neu starten, um die Hooks zu aktivieren",
-  "PowerShell unavailable: {0}": "PowerShell nicht verfügbar: {0}",
-  "PowerShell failed: {0}": "PowerShell fehlgeschlagen: {0}",
   "key file unreadable": "Schlüsseldatei nicht lesbar",
   "master key corrupted": "Hauptschlüssel beschädigt",
   "vault unreadable (invalid JSON), restore a backup": "Tresor nicht lesbar (ungültiges JSON), Backup wiederherstellen",
@@ -279,8 +284,5 @@
   "Newest first": "Neueste zuerst",
   "Oldest first": "Älteste zuerst",
   "Name (A to Z)": "Name (A bis Z)",
-  "By": "Von",
-  "you": "Sie",
-  "unknown": "unbekannt",
-  "Created by: {0}": "Erstellt von: {0}"
+  "Open the editor tab at startup": "Editor-Tab beim Start öffnen"
 }

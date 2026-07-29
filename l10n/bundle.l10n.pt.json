@@ -179,6 +179,13 @@
   "master key unreachable: {0}": "chave-mestra inacessível: {0}",
   "DPAPI unavailable: the master key is stored unprotected on disk": "DPAPI indisponível: a chave-mestra está guardada no disco sem proteção",
   "master key protected only by file permissions (0600)": "chave-mestra protegida apenas pelas permissões do ficheiro (0600)",
+  "{0} unavailable: {1}": "{0} indisponível: {1}",
+  "{0} failed: {1}": "{0} falhou: {1}",
+  "no entry in the keyring": "nenhuma entrada no porta-chaves",
+  "round trip mismatch": "a ida e volta não devolve a mesma chave",
+  "cannot store the master key ({0})": "não é possível guardar a chave-mestra ({0})",
+  "macOS keychain unavailable: the master key is protected only by file permissions (0600)": "porta-chaves do macOS indisponível: a chave-mestra está protegida apenas pelas permissões do ficheiro (0600)",
+  "no keyring available (install libsecret-tools): the master key is protected only by file permissions (0600)": "nenhum porta-chaves disponível (instale libsecret-tools): a chave-mestra está protegida apenas pelas permissões do ficheiro (0600)",
   "vault tampered with: the file signature does not match": "cofre adulterado: a assinatura do ficheiro não corresponde",
   "unknown key: {0}": "chave desconhecida: {0}",
   "expired key: {0}": "chave expirada: {0}",
@@ -202,8 +209,6 @@
   "{0} s": "{0} s",
   "Claude Vault: connection to Claude Code updated": "Claude Vault: conexão ao Claude Code atualizada",
   "Claude Vault: connected to Claude Code, restart a session to activate the hooks": "Claude Vault: conectado ao Claude Code, reinicie uma sessão para ativar os hooks",
-  "PowerShell unavailable: {0}": "PowerShell indisponível: {0}",
-  "PowerShell failed: {0}": "PowerShell falhou: {0}",
   "key file unreadable": "ficheiro de chave ilegível",
   "master key corrupted": "chave-mestra corrompida",
   "vault unreadable (invalid JSON), restore a backup": "cofre ilegível (JSON inválido), restaure uma cópia de segurança",
@@ -279,8 +284,5 @@
   "Newest first": "Mais recentes primeiro",
   "Oldest first": "Mais antigas primeiro",
   "Name (A to Z)": "Nome (de A a Z)",
-  "By": "Por",
-  "you": "você",
-  "unknown": "desconhecido",
-  "Created by: {0}": "Criada por: {0}"
+  "Open the editor tab at startup": "Abrir o separador do editor no arranque"
 }

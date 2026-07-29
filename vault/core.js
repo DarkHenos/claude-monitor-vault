@@ -68,7 +68,11 @@ function lockDown(file) {
       spawnSync('icacls', [file, '/inheritance:r', '/grant:r', user + ':(F)'],
         { stdio: 'ignore', windowsHide: true });
     } else {
-      fs.chmodSync(file, 0o600);
+      // A directory must keep its execute bit to stay traversable. Locking one
+      // down to 0600 shuts the vault out of its own files: the .acl sentinel
+      // could then never be written, so ensureDirs() would redo this on every
+      // single call.
+      fs.chmodSync(file, fs.statSync(file).isDirectory() ? 0o700 : 0o600);
     }
   } catch (e) { /* best effort, reported by healthCheck() */ }
 }
@@ -104,15 +108,21 @@ function equalCT(a, b) {
 
 // ------------------------------------------------------------------ master key
 
-// The secret NEVER travels through argv (visible in the process list):
-// the PowerShell script is sent over stdin, data included.
-function powershell(script) {
-  const r = spawnSync('powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '-'],
-    { input: script, encoding: 'utf8', windowsHide: true, timeout: 20000 });
-  if (r.error) throw fail('PowerShell unavailable: {0}', r.error.message);
-  if (r.status !== 0) throw fail('PowerShell failed: {0}', String(r.stderr || '').trim());
+// Every OS helper below receives its payload on STDIN, never on argv: command
+// lines are readable by any process of the session, so a secret passed as an
+// argument would leak for the lifetime of the call.
+function runIn(cmd, args, input) {
+  const r = spawnSync(cmd, args,
+    { input, encoding: 'utf8', windowsHide: true, timeout: 20000 });
+  if (r.error) throw fail('{0} unavailable: {1}', cmd, r.error.message);
+  if (r.status !== 0) throw fail('{0} failed: {1}', cmd, String(r.stderr || '').trim());
   return String(r.stdout || '').trim();
+}
+
+// --- Windows: DPAPI, CurrentUser scope. The wrapped blob lives in the key file.
+function powershell(script) {
+  return runIn('powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '-'], script);
 }
 
 function dpapiProtect(buf) {
@@ -131,36 +141,139 @@ function dpapiUnprotect(buf) {
     "[Convert]::ToBase64String($p)\n"));
 }
 
+const KEYRING_SERVICE = 'claude-vault';
+const KEYRING_ACCOUNT = 'master-key';
+
+// --- macOS: login keychain. `security -i` reads its COMMANDS from stdin, which
+// is the only non-interactive way to store a password without putting it on the
+// command line. Base64 contains no quote and no backslash, so the quoting holds.
+function keychainStore(buf) {
+  runIn('security', ['-i'],
+    'add-generic-password -U -s ' + KEYRING_SERVICE + ' -a ' + KEYRING_ACCOUNT +
+    ' -D "Claude Vault master key" -w "' + b64(buf) + '"\n');
+}
+
+function keychainLoad() {
+  // Only the service and account names travel on argv here, never the secret.
+  return unb64(runIn('security',
+    ['find-generic-password', '-s', KEYRING_SERVICE, '-a', KEYRING_ACCOUNT, '-w'], ''));
+}
+
+// --- Linux: libsecret (GNOME keyring, KWallet via the Secret Service API).
+// `secret-tool store` reads the secret on stdin by design — and takes ALL of
+// stdin up to EOF, trailing newline included. Sending one would store 45 bytes
+// where we mean 44, so the payload goes out bare.
+// A GNOME "login" keyring unlocked with an EMPTY password — the usual headless
+// and CI workaround — is written to disk UNENCRYPTED, while the Secret Service
+// API keeps answering as if nothing were wrong. The round trip below would pass
+// and healthCheck would report a healthy vault, so the only honest test is to
+// go and look for the material itself in the keyring files.
+function keyringStoresInClear(payload) {
+  const dir = path.join(os.homedir(), '.local', 'share', 'keyrings');
+  let names;
+  try { names = fs.readdirSync(dir); } catch (e) { return false; }   // no keyring on disk: nothing to prove
+  for (const n of names) {
+    if (!n.endsWith('.keyring')) continue;
+    try { if (fs.readFileSync(path.join(dir, n)).includes(payload)) return true; }
+    catch (e) { /* unreadable file: move on */ }
+  }
+  return false;
+}
+
+function secretToolStore(buf) {
+  const payload = b64(buf);
+  runIn('secret-tool',
+    ['store', '--label=Claude Vault master key', 'service', KEYRING_SERVICE, 'account', KEYRING_ACCOUNT],
+    payload);
+  if (keyringStoresInClear(payload)) {
+    throw fail('the keyring is unlocked with an empty password and stores secrets unencrypted');
+  }
+}
+
+function secretToolLoad() {
+  const out = runIn('secret-tool',
+    ['lookup', 'service', KEYRING_SERVICE, 'account', KEYRING_ACCOUNT], '');
+  if (!out) throw fail('no entry in the keyring');
+  return unb64(out);
+}
+
+// `inFile` tells whether the key material lives in the key file (wrapped) or in
+// the OS keyring, in which case the file only carries the envelope.
+const PROVIDERS = {
+  dpapi:     { inFile: true,  protect: b => b64(dpapiProtect(b)), unprotect: blob => dpapiUnprotect(unb64(blob)) },
+  keychain:  { inFile: false, protect: b => { keychainStore(b); return ''; }, unprotect: () => keychainLoad() },
+  libsecret: { inFile: false, protect: b => { secretToolStore(b); return ''; }, unprotect: () => secretToolLoad() },
+  plain:     { inFile: true,  protect: b => b64(b), unprotect: blob => unb64(blob) }
+};
+
+// Best protection first, 'plain' always last: a headless Linux box, a container
+// or a machine with no keyring daemon must still be able to run the vault
+// rather than refuse to start. healthCheck() reports the downgrade.
+function providerChain() {
+  if (process.platform === 'win32') return ['dpapi', 'plain'];
+  if (process.platform === 'darwin') return ['keychain', 'plain'];
+  if (process.platform === 'linux') return ['libsecret', 'plain'];
+  return ['plain'];
+}
+
 // Key file envelope: { mode, blob, seq }
 // seq = monotonic counter sealed together with the key: prevents replaying an older vault.
 function readKeyFile() {
   const raw = JSON.parse(fs.readFileSync(KEY_PATH, 'utf8'));
-  if (!raw || !raw.blob) throw fail('key file unreadable');
+  if (!raw || typeof raw.mode !== 'string' || !PROVIDERS[raw.mode]) throw fail('key file unreadable');
+  // Keyring modes legitimately carry an empty blob: the material is not here.
+  if (PROVIDERS[raw.mode].inFile && !raw.blob) throw fail('key file unreadable');
   return raw;
-}
-
-function writeKeyFile(mode, keyBuf, seq) {
-  const blob = mode === 'dpapi' ? b64(dpapiProtect(keyBuf)) : b64(keyBuf);
-  writeAtomic(KEY_PATH, JSON.stringify({ v: 1, mode, blob, seq }));
 }
 
 let _master = null;      // in memory cache, per process
 let _masterMode = null;
+let _downgrade = null;   // why the OS store was refused, when it was
+
+// Writes the key with the best provider that ACTUALLY works, verified by a real
+// round trip. A keyring that accepts a write but cannot read it back would lock
+// every secret away for good, so it must never be trusted on the write alone.
+function storeKey(keyBuf, seq) {
+  const errs = [];
+  for (const mode of providerChain()) {
+    const p = PROVIDERS[mode];
+    try {
+      const blob = p.protect(keyBuf);
+      const back = p.unprotect(blob);
+      if (!Buffer.isBuffer(back) || !back.equals(keyBuf)) throw fail('round trip mismatch');
+      writeAtomic(KEY_PATH, JSON.stringify({ v: 1, mode, blob, seq }));
+      _masterMode = mode;
+      // Keep why we had to settle for less: "no keyring" and "the keyring
+      // stores in clear" both end up in 'plain' and call for different actions.
+      _downgrade = errs.length ? errs.join(' | ') : null;
+      return mode;
+    } catch (e) { errs.push(mode + ': ' + e.message); }
+  }
+  throw fail('cannot store the master key ({0})', errs.join(' | '));
+}
+
+// A vault created before a keyring was reachable (older build, keyring daemon
+// not started yet) sits in 'plain'. Move it up as soon as a real keyring
+// answers, keeping the SAME key bytes so every existing secret stays readable.
+function upgradeProtection(seq) {
+  if (_masterMode !== 'plain' || providerChain()[0] === 'plain') return;
+  try { storeKey(_master, seq); } catch (e) { /* keyring still out of reach: stay in plain */ }
+}
 
 function masterKey() {
   if (_master) return _master;
   ensureDirs();
   if (!fs.existsSync(KEY_PATH)) {
     const key = crypto.randomBytes(32);
-    const mode = process.platform === 'win32' ? 'dpapi' : 'plain';
-    writeKeyFile(mode, key, 0);
-    _master = key; _masterMode = mode;
+    storeKey(key, 0);
+    _master = key;
     return key;
   }
   const kf = readKeyFile();
   _masterMode = kf.mode;
-  _master = kf.mode === 'dpapi' ? dpapiUnprotect(unb64(kf.blob)) : unb64(kf.blob);
-  if (_master.length !== 32) throw fail('master key corrupted');
+  _master = PROVIDERS[kf.mode].unprotect(kf.blob);
+  if (!Buffer.isBuffer(_master) || _master.length !== 32) throw fail('master key corrupted');
+  upgradeProtection(kf.seq || 0);
   return _master;
 }
 
@@ -169,7 +282,7 @@ function currentSeq() {
 }
 
 function bumpSeq(next) {
-  writeKeyFile(_masterMode || 'dpapi', masterKey(), next);
+  storeKey(masterKey(), next);   // masterKey() first: it resolves the current mode
 }
 
 function derive(info, salt, len) {
@@ -542,8 +655,7 @@ function revokeAll() {
   try { fs.unlinkSync(VAULT_PATH); } catch (e) { /* already gone */ }
   const seq = currentSeq() + 1;
   _master = crypto.randomBytes(32);
-  _masterMode = process.platform === 'win32' ? 'dpapi' : 'plain';
-  writeKeyFile(_masterMode, _master, seq);
+  storeKey(_master, seq);
   const v = emptyVault();
   v.seq = seq;
   audit(v, 'revoke-all', null, String(n), 'user');
@@ -1034,13 +1146,23 @@ function healthCheck() {
     issues.push(issue('error', fail('master key unreachable: {0}', e.message)));
     return { ok: false, issues, mode: null };
   }
-  if (_masterMode !== 'dpapi' && process.platform === 'win32') {
-    issues.push(issue('warn',
-      fail('DPAPI unavailable: the master key is stored unprotected on disk')));
-  }
-  if (_masterMode === 'plain' && process.platform !== 'win32') {
-    issues.push(issue('warn',
-      fail('master key protected only by file permissions (0600)')));
+  // Same contract on the three platforms: the key is held by the OS secret
+  // store. Only the fallback is worth warning about, and the message names the
+  // store that is missing so the user knows what to install or unlock.
+  if (_masterMode === 'plain') {
+    const best = providerChain()[0];
+    // "No keyring available" would be a lie when there IS one and we refused it
+    // because it keeps its contents in the clear; that case gets its own words.
+    // Every other cause keeps the message that names what to install or unlock.
+    issues.push(issue('warn', (_downgrade && _downgrade.indexOf('unencrypted') !== -1)
+      ? fail('the keyring stores secrets unencrypted (login keyring with an empty password): the master key is protected only by file permissions (0600)')
+      : best === 'dpapi'
+        ? fail('DPAPI unavailable: the master key is stored unprotected on disk')
+        : best === 'keychain'
+          ? fail('macOS keychain unavailable: the master key is protected only by file permissions (0600)')
+          : best === 'libsecret'
+            ? fail('no keyring available (install libsecret-tools): the master key is protected only by file permissions (0600)')
+            : fail('master key protected only by file permissions (0600)')));
   }
   try { loadRaw(); }
   catch (e) { issues.push(issue('error', e)); }
