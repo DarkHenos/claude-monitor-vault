@@ -1,0 +1,113 @@
+name: tests
+
+# The vault talks to a different secret store on every platform, and none of
+# them can be exercised from a single developer machine. These runners are the
+# only place where DPAPI, the macOS keychain and libsecret are all real.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Every shipped file parses
+        run: |
+          for f in extension.js i18n.js vault/*.js tests/*.js; do
+            node --check "$f" || exit 1
+          done
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+      - name: Translation bundles are aligned
+        run: |
+          node -e "
+            const fs=require('fs');
+            const en=Object.keys(JSON.parse(fs.readFileSync('l10n/bundle.l10n.json','utf8')));
+            let bad=0;
+            for (const l of ['fr','de','es','pt']) {
+              const k=Object.keys(JSON.parse(fs.readFileSync('l10n/bundle.l10n.'+l+'.json','utf8')));
+              const missing=en.filter(x=>!k.includes(x));
+              const extra=k.filter(x=>!en.includes(x));
+              if (missing.length||extra.length) { bad++; console.log(l+': missing '+missing.length+', extra '+extra.length); }
+            }
+            if (bad) process.exit(1);
+            console.log('bundles aligned');
+          "
+      - name: Every manifest placeholder is defined
+        run: |
+          node -e "
+            const fs=require('fs');
+            const p=fs.readFileSync('package.json','utf8');
+            const nls=JSON.parse(fs.readFileSync('package.nls.json','utf8'));
+            const used=[...new Set(p.match(/%[a-zA-Z0-9._]+%/g)||[])].map(s=>s.slice(1,-1));
+            const missing=used.filter(k=>!(k in nls));
+            if (missing.length) { console.log('undefined: '+missing.join(', ')); process.exit(1); }
+            console.log(used.length+' placeholders, all defined');
+          "
+
+  store-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: DPAPI holds the master key
+        env:
+          EXPECT_MODE: dpapi
+        run: node tests/store-smoke.js
+
+  store-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      # A CI runner has no interactive login keychain: we make an unlocked one
+      # the default so `security` behaves as it does in a real session.
+      - name: The login keychain holds the master key
+        env:
+          EXPECT_MODE: keychain
+        run: |
+          security create-keychain -p ci-pass ci.keychain
+          security default-keychain -s ci.keychain
+          security unlock-keychain -p ci-pass ci.keychain
+          security set-keychain-settings ci.keychain
+          node tests/store-smoke.js
+
+  store-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Install a real keyring
+        run: sudo apt-get update && sudo apt-get install -y libsecret-tools gnome-keyring dbus-x11
+      # A NON-EMPTY password on purpose: unlocked with an empty one, GNOME writes
+      # the keyring unencrypted, and the vault is supposed to refuse it. That
+      # case is covered by the job below.
+      - name: libsecret holds the master key
+        env:
+          EXPECT_MODE: libsecret
+        run: |
+          dbus-run-session -- bash -c '
+            echo -n "ci-pass" | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1
+            sleep 2
+            node tests/store-smoke.js
+          '
+
+  store-linux-headless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      # No keyring, no session bus: the container and SSH case. The vault must
+      # keep working on file permissions, and say so, rather than refuse to run.
+      - name: Falls back to file permissions, and says so
+        env:
+          EXPECT_MODE: plain
+        run: node tests/store-smoke.js

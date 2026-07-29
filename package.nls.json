@@ -22,6 +22,7 @@
   "cmd.vault.audit": "Access log",
   "cmd.vault.connect": "Connect to Claude Code",
   "cmd.vault.disconnect": "Disconnect from Claude Code",
+  "cfg.autoConnect": "Wire Claude Code automatically when the extension starts: hooks installed, local MCP servers routed through the vault proxy. Turn this off to keep Claude Code untouched until you press Connect yourself, which you will then have to do at every start.",
   "cmd.vault.revokeAll": "Revoke everything",
   "cfg.pollSeconds": "Seconds between API calls. A cache shared across every VS Code window means one real request feeds them all.",
   "cfg.alerts": "Notify when the 5-hour session reaches 80% then 95%, and the weekly limit 90%.",

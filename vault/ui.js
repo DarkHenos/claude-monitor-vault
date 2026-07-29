@@ -1099,7 +1099,14 @@ ${entries.length
   // that is what makes the automation acceptable on a configuration file that is
   // not ours. The manual button remains as a safety net if the write fails
   // (permissions, locked file, disk full).
+  //
+  // It can be turned off. Writing into another product's configuration should
+  // stay a choice, so claudeLimits.autoConnect gates BOTH writes — the hooks and
+  // the MCP wrapping. Off, nothing of Claude Code is touched until the user
+  // presses Connect, and they have to press it again at every start.
+  const autoConnect = vscode.workspace.getConfiguration('claudeLimits').get('autoConnect', true);
   try {
+    if (!autoConnect) throw { skipped: true };
     const st = installer.status(version);
     if (!st.installed || !st.upToDate) {
       installer.install(__dirname, version);
@@ -1118,7 +1125,8 @@ ${entries.length
     try { installer.wrapMcpServers(); } catch (e) { /* the manual snippet remains */ }
   } catch (e) {
     // Silent: the panel already shows "not connected" along with the button.
-    console.error('Claude Vault: automatic connection failed:', e);
+    // A deliberate opt-out is not a failure and has nothing to report.
+    if (!e || !e.skipped) console.error('Claude Vault: automatic connection failed:', e);
   }
 
   reviewPending();     // a request may have been left waiting from a past session

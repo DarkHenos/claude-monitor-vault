@@ -60,6 +60,34 @@ vault, and nothing explained why.
   machine where no secret is ever stored, opening it used to force the key into
   existence and block the extension host on several system calls.
 
+### The use counter is now enforceable
+
+- **A key capped at *n* uses, or burned after use, could be handed back its
+  spent uses.** The counter, the cap and the expiry date sat outside the file
+  signature, while they are exactly what the expiry and burn decisions read:
+  anyone able to write the vault file could reset `uses` and keep using a key
+  the interface presented as burned. They still could not decrypt anything
+  without the master key, but a limit that can be erased is not a limit. The
+  vault format moves to v2 and signs all three. An existing vault is read with
+  the format it was signed with and migrates on its first write — nothing to do,
+  no key to re-enter.
+
+### Automatic connection, and how to refuse it
+
+- Wiring Claude Code on startup is what makes the extension usable without
+  reading anything, so it stays the default. But it writes into another
+  product's configuration, and that should remain a choice: the new
+  **`claudeLimits.autoConnect`** setting turns it off. Off, nothing of Claude
+  Code is touched until you press Connect — and you press it at every start.
+  The setting gates both writes, the hooks and the MCP wrapping.
+
+### Runs on far more installations
+
+- **The minimum VS Code version drops from 1.106 to 1.75.** Nothing in the
+  extension needed a 2025 build: the most demanding APIs are the view badge
+  (1.72) and `vscode.l10n` (1.73). Roughly three years of releases were being
+  excluded for no reason.
+
 ### Also in this release
 
 - **A way back.** The extension writes into Claude Code's own configuration —

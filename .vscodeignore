@@ -3,6 +3,8 @@
 .vscodeignore
 .gitignore
 .git/**
+.github/**
+tests/**
 node_modules/**
 package-lock.json
 **/*.tmp

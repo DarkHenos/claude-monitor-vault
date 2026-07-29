@@ -334,16 +334,33 @@ function derive(info, salt, len) {
 
 // ---------------------------------------------------------------------- vault file
 
-function emptyVault() { return { v: 1, seq: 0, secrets: {}, audit: [] }; }
+const VAULT_FORMAT = 2;
 
-function canonical(entries, seq) {
+function emptyVault() { return { v: VAULT_FORMAT, seq: 0, secrets: {}, audit: [] }; }
+
+// v1 signed the identity and the ciphertext of each entry, and nothing else.
+// The use counter, the cap and the expiry date sat outside it, yet those three
+// are exactly what isExpired() and the burn-after-use decision read: anyone able
+// to write the vault file could reset `uses` and make a key presented as burned
+// usable again, indefinitely. They cannot decrypt anything without the master
+// key, but a limit that can be erased is not a limit. v2 signs them.
+function canonical(entries, seq, ver) {
   const ids = Object.keys(entries).sort();
-  return JSON.stringify({ seq, e: ids.map(id => [id, entries[id].name, entries[id].ct]) });
+  if (ver === 1) {
+    return JSON.stringify({ seq, e: ids.map(id => [id, entries[id].name, entries[id].ct]) });
+  }
+  return JSON.stringify({
+    v: 2, seq,
+    e: ids.map(id => {
+      const s = entries[id];
+      return [id, s.name, s.ct, s.uses || 0, s.maxUses || 0, s.expiresAt || 0];
+    })
+  });
 }
 
-function fileMac(entries, seq) {
+function fileMac(entries, seq, ver) {
   return crypto.createHmac('sha256', derive(MAC_INFO, Buffer.alloc(0), 32))
-    .update(canonical(entries, seq)).digest('base64');
+    .update(canonical(entries, seq, ver || VAULT_FORMAT)).digest('base64');
 }
 
 function loadRaw() {
@@ -354,7 +371,10 @@ function loadRaw() {
   if (!v || !v.secrets) return emptyVault();
 
   // Global integrity: prevents adding, removing or swapping entries.
-  const expect = fileMac(v.secrets, v.seq || 0);
+  // A vault written before v2 is verified against the format it was signed with;
+  // the next save rewrites it in v2, so the migration costs the user nothing.
+  const ver = v.v === VAULT_FORMAT ? VAULT_FORMAT : 1;
+  const expect = fileMac(v.secrets, v.seq || 0, ver);
   if (!v.mac || !equalCT(v.mac, expect)) {
     throw fail('vault tampered with: the file signature does not match');
   }
@@ -369,7 +389,8 @@ function loadRaw() {
 function saveRaw(v, structural) {
   if (structural) v.seq = (v.seq || 0) + 1;
   v.audit = pruneAudit(v.audit);
-  v.mac = fileMac(v.secrets, v.seq || 0);
+  v.v = VAULT_FORMAT;                // any save migrates the file to the current format
+  v.mac = fileMac(v.secrets, v.seq || 0, VAULT_FORMAT);
   writeAtomic(VAULT_PATH, JSON.stringify(v, null, 0));
   // The counter moves ONLY once the vault is safely on disk. Bumping it first
   // — as this did — meant that any interruption in between (crash, power cut,
@@ -740,10 +761,11 @@ function consume(name, who) {
   if (burned) {
     delete v.secrets[s.id];
     audit(v, 'burn', s.name, null);
-  } else {
-    // uses/lastUsedAt are not part of the AAD: no need to re-encrypt.
-    s.ct = s.ct;
   }
+  // No re-encryption: uses/lastUsedAt are not part of the per-entry AAD. They
+  // are covered by the FILE signature since v2 though, and saveRaw recomputes
+  // it below on every call, structural or not — which is what makes the cap and
+  // the burn actually enforceable rather than merely displayed.
   saveRaw(v, !!burned);
   return { value, entry: s, burned: !!burned };
 }
