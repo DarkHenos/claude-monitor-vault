@@ -2,7 +2,7 @@
   "name": "claude-monitor-vault",
   "displayName": "%ext.displayName%",
   "description": "%ext.description%",
-  "version": "0.58.1",
+  "version": "0.58.2",
   "l10n": "./l10n",
   "publisher": "alexossart",
   "license": "MIT",
@@ -81,7 +81,8 @@
         },
         {
           "id": "claudeLimits.gauge",
-          "name": "%view.panel%"
+          "name": "%view.gauge%",
+          "visibility": "collapsed"
         }
       ],
       "claudeRateLimitAux": [
@@ -245,7 +246,7 @@
         },
         {
           "command": "claudeLimits.moveToPrimary",
-          "when": "view == claudeLimits.panelAux || view == claudeLimits.gauge",
+          "when": "view == claudeLimits.panelAux || (view == claudeLimits.gauge && !claudeLimits.inPrimary)",
           "group": "navigation@3"
         }
       ],
@@ -355,7 +356,7 @@
             "sidebar",
             "secondarySidebar"
           ],
-          "default": "secondarySidebar",
+          "default": "sidebar",
           "description": "%cfg.location%"
         }
       }

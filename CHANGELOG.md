@@ -2,6 +2,32 @@
 
 All notable changes to **Claude Monitor & Vault**.
 
+## 0.58.2 — 2026-07-30
+
+**A fresh install now opens on the real panel.** On a new VS Code profile the
+extension showed a bare two-line list, without progress bars and without the
+vault, and nothing explained why.
+
+- The panel now lives in the **left side bar by default**. It used to default to
+  the secondary side bar, which on a fresh profile is closed — or busy with the
+  chat. The only entry point a newcomer could see, the activity-bar icon on the
+  left, therefore led to the lightweight stand-in rather than to the panel. The
+  vault is drawn inside the panel, so it was missing along with it. Moving the
+  panel to the right is still one click away, and the choice is remembered.
+- The stand-in is no longer named “Claude Monitor”, like the panel it replaces
+  and next to which it could appear. It is now **“Limits”**, collapsed by
+  default, and it carries `4% 5h · 11% week` in its own title row — the summary
+  0.58.0 had dropped. Collapsed it costs no room, and it stays the holder of the
+  numeric badge, so the figure is on the icon from startup without waiting for
+  the panel to be opened.
+- The “move to the left side bar” button no longer shows on the stand-in when
+  the panel is already there.
+- README brought back in line: it still described the old default and promised a
+  click-to-recall gesture that 0.58.0 had removed.
+
+An existing install that never moved the panel will find it on the left after
+this update; the mirror button puts it back on the right.
+
 ## 0.58.1 — 2026-07-29
 
 - **Linux: the vault now reaches the OS keyring when the extension host runs

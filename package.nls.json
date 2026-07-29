@@ -3,6 +3,7 @@
   "ext.description": "Your Claude companion in VS Code: live usage and rate-limit monitoring for Claude Code (session, weekly, Opus, Sonnet) in the sidebar and status bar, with threshold alerts and paid-credit tracking. Includes Claude Vault, an encrypted local store that lets Claude use your API keys and secrets without ever seeing them, in shell commands and MCP tools.",
   "view.container": "Claude Monitor",
   "view.panel": "Claude Monitor",
+  "view.gauge": "Limits",
   "cap.untrusted": "The extension only reads the local OAuth token and never runs workspace code.",
   "cat.limits": "Claude Limits",
   "cat.vault": "Claude Vault",

@@ -62,7 +62,11 @@ function cfg() {
     statusBar: c.get('statusBar', true),
     pauseWhenExhausted: c.get('pauseWhenExhausted', true),
     showCredits: c.get('showCredits', true),
-    location: c.get('location', 'secondarySidebar'),  // sidebar | secondarySidebar
+    // Primary side bar by default: the activity-bar icon on the left is the
+    // only entry point a new user sees, and the secondary side bar is closed
+    // (or busy with the chat) on a fresh profile. Defaulting to the right left
+    // newcomers on the bare gauge, with no panel and no vault in sight.
+    location: c.get('location', 'sidebar'),           // sidebar | secondarySidebar
     badge: c.get('badge', true),      // activity-bar badge, on by default
     statusPos: c.get('statusBarPosition', 'right'),      // left | right
     statusStyle: c.get('statusBarStyle', 'prominent'),   // classic | accent | prominent
@@ -685,7 +689,10 @@ function activate(context) {
       webviewView.badge = undefined;
     }
     // The gauge is the sole carrier, in every location: its badge exists from
-    // view creation, unlike a webview's which only exists once opened.
+    // view creation, unlike a webview's which only exists once opened. Its
+    // description is what makes it readable while collapsed — the whole point
+    // of a one-line summary that costs no screen space.
+    gaugeView.description = head;
     gaugeView.badge = badge;
     gaugeEmitter.fire(undefined);
   }
