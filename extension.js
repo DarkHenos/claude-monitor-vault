@@ -65,11 +65,6 @@ function cfg() {
     statusBar: c.get('statusBar', true),
     pauseWhenExhausted: c.get('pauseWhenExhausted', true),
     showCredits: c.get('showCredits', true),
-    // Primary side bar by default: the activity-bar icon on the left is the
-    // only entry point a new user sees, and the secondary side bar is closed
-    // (or busy with the chat) on a fresh profile. Defaulting to the right left
-    // newcomers on the bare gauge, with no panel and no vault in sight.
-    location: c.get('location', 'sidebar'),           // sidebar | secondarySidebar
     badge: c.get('badge', true),      // activity-bar badge, on by default
     statusPos: c.get('statusBarPosition', 'right'),      // left | right
     statusStyle: c.get('statusBarStyle', 'prominent'),   // classic | accent | prominent
@@ -493,13 +488,6 @@ function activate(context) {
   // --- THE PANEL: single webview (quota bars, secrets, ghost skeleton).
   // No retainContextWhenHidden: the webview restores its state via getState/setState
   // and we push data back to it whenever it becomes visible again.
-  // One provider, two view ids: the activity-bar view and its twin in the
-  // secondary side bar. The claudeLimits.inSecondary context key keeps them
-  // mutually exclusive, so webviewView always points at the only live one.
-  // The key is phrased NEGATIVELY on purpose: unset — which is what it is until
-  // activation sets it — must resolve to the default home, now the primary side
-  // bar. Phrased the other way round, every startup would show the panel on the
-  // right for a moment and then move it.
   const panelProvider = {
     resolveWebviewView(v) {
       webviewView = v;
@@ -521,36 +509,18 @@ function activate(context) {
     }
   };
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('claudeLimits.panel', panelProvider),
-    vscode.window.registerWebviewViewProvider('claudeLimits.panelAux', panelProvider)
+    vscode.window.registerWebviewViewProvider('claudeLimits.panel', panelProvider)
   );
 
-  // Which twin is alive is decided by the when-clauses in package.json, fed by
-  // this context key. A settings change only relocates the view; focus is
-  // stolen solely by the explicit mirror button (moveTo).
-  function inSecondary() { return cfg().location === 'secondarySidebar'; }
-  function activePanelId() {
-    return inSecondary() ? 'claudeLimits.panelAux' : 'claudeLimits.panel';
-  }
-  function applyLocation() {
-    return vscode.commands.executeCommand('setContext', 'claudeLimits.inSecondary', inSecondary());
-  }
-  applyLocation();
-
-  async function moveTo(loc) {
-    try {
-      await vscode.workspace.getConfiguration('claudeLimits')
-        .update('location', loc, vscode.ConfigurationTarget.Global);
-      cfgCache = null;
-      await applyLocation();
-      if (loc === 'secondarySidebar') {
-        // The primary side bar would otherwise linger open on the summary line
-        // alone, which reads as if the move had failed: fold it instead.
-        vscode.commands.executeCommand('workbench.action.closeSidebar');
-      }
-      vscode.commands.executeCommand(activePanelId() + '.focus');
-    } catch (e) { /* the location is a preference: never break on it */ }
-  }
+  // ONE view, one home. There used to be a twin declared in a container of our
+  // own in the secondary side bar, swapped by a context key. VS Code does not
+  // support that: `contributes.viewsContainers` only accepts `activitybar` and
+  // `panel`, so the container was never created and the twin was silently
+  // dropped into the Explorer — VS Code said as much in its log, at every
+  // window launch. Relocating a view is the workbench's job anyway: the user
+  // drags it wherever they want, next to the chat included, and VS Code
+  // remembers. The title-bar button just opens that native picker.
+  const PANEL_ID = 'claudeLimits.panel';
 
   // Alignment is fixed at creation, so a change of side means rebuilding the
   // item. buildStatus is idempotent: it only recreates when the side actually
@@ -920,17 +890,15 @@ function activate(context) {
       schedule();
     }),
     vscode.commands.registerCommand('claudeLimits.open', () =>
-      vscode.commands.executeCommand(activePanelId() + '.focus')),
-    // The mirror buttons in the view title: same panel, other side of the editor.
-    vscode.commands.registerCommand('claudeLimits.moveToSecondary', () =>
-      moveTo('secondarySidebar')),
-    vscode.commands.registerCommand('claudeLimits.moveToPrimary', () =>
-      moveTo('sidebar')),
-    // Wide mode: the workbench itself can maximize the secondary side bar, so
-    // the button only shows on the twin that lives there (no primary-side
-    // equivalent exists in the API).
-    vscode.commands.registerCommand('claudeLimits.maximize', () =>
-      vscode.commands.executeCommand('workbench.action.toggleMaximizedAuxiliaryBar')),
+      vscode.commands.executeCommand(PANEL_ID + '.focus')),
+    // Relocation, handed to the workbench. It offers every destination VS Code
+    // actually supports — including the secondary side bar, next to the chat —
+    // and it remembers the choice. An extension cannot declare a container
+    // there, which is exactly what used to make this button lie.
+    vscode.commands.registerCommand('claudeLimits.moveView', async () => {
+      await vscode.commands.executeCommand(PANEL_ID + '.focus');
+      return vscode.commands.executeCommand('workbench.action.moveFocusedView');
+    }),
     // Called by the settings window after a language change. The webview holds
     // a dictionary baked into its HTML, so it is rebuilt rather than nudged;
     // the row labels come back translated on the next render.
@@ -947,13 +915,12 @@ function activate(context) {
       render(true);
     }),
     vscode.commands.registerCommand('claudeVault.show', () =>
-      vscode.commands.executeCommand(activePanelId() + '.focus')),
+      vscode.commands.executeCommand(PANEL_ID + '.focus')),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (!e.affectsConfiguration('claudeLimits')) return;
       cfgCache = null;
       buildStatus();               // rebuild only if the side changed
       applyStatusVisibility();
-      applyLocation();             // relocate the panel if the side setting changed
       render(true);
       schedule();
     }),

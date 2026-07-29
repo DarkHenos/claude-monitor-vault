@@ -32,9 +32,5 @@
   "cfg.badge": "Afficher un badge avec le pourcentage de la session sur l'icône de la barre d'activité.",
   "cfg.statusBarPosition": "Quel côté de la barre d'état affiche le chiffre d'usage.",
   "cfg.statusBarStyle": "L'aspect du chiffre dans la barre d'état : classique, couleur Claude, ou une pastille colorée voyante.",
-  "cfg.statusBarWeek": "Afficher aussi la limite hebdomadaire dans la barre d'état, après la session.",
-  "cmd.maximize": "Agrandir ou restaurer le panneau",
-  "cmd.moveToSecondary": "Basculer dans la barre latérale secondaire",
-  "cmd.moveToPrimary": "Revenir dans la barre latérale gauche",
-  "cfg.location": "Où vit le panneau : la barre d'activité à gauche, ou la barre latérale secondaire à droite, à côté du chat. Le bouton miroir dans la barre de titre du panneau bascule aussi ce réglage."
+  "cfg.statusBarWeek": "Afficher aussi la limite hebdomadaire dans la barre d'état, après la session."
 }

@@ -84,9 +84,13 @@ function syncBridge(srcDir, version) {
 function realNode() {
   const exe = path.basename(process.execPath).toLowerCase();
   if (exe === 'node' || exe === 'node.exe') return process.execPath;
+  // No login shell (-l) and a hard timeout: this runs on the extension host
+  // thread during activation, and a login shell loads the user's whole profile
+  // — nvm, rbenv, oh-my-zsh — which can take seconds, freezing every extension
+  // in the process before the first figure is even drawn.
   const probe = process.platform === 'win32'
-    ? spawnSync('where', ['node'], { encoding: 'utf8', windowsHide: true })
-    : spawnSync('/bin/sh', ['-lc', 'command -v node'], { encoding: 'utf8' });
+    ? spawnSync('where', ['node'], { encoding: 'utf8', windowsHide: true, timeout: 3000 })
+    : spawnSync('/bin/sh', ['-c', 'command -v node'], { encoding: 'utf8', timeout: 3000 });
   if (!probe.error && probe.status === 0) {
     const first = String(probe.stdout || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0];
     if (first && fs.existsSync(first)) return first;

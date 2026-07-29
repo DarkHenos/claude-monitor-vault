@@ -32,9 +32,5 @@
   "cfg.badge": "Ein Badge mit dem Prozentsatz der Sitzung auf dem Symbol der Aktivitätsleiste anzeigen.",
   "cfg.statusBarPosition": "Welche Seite der Statusleiste die Nutzungszahl anzeigt.",
   "cfg.statusBarStyle": "Wie die Zahl in der Statusleiste aussieht: klassisch, Claude-Farbe oder eine auffällige farbige Pille.",
-  "cfg.statusBarWeek": "Das Wochenlimit zusätzlich in der Statusleiste anzeigen, nach der Sitzung.",
-  "cmd.maximize": "Das Panel maximieren oder wiederherstellen",
-  "cmd.moveToSecondary": "In die sekundäre Seitenleiste verschieben",
-  "cmd.moveToPrimary": "Zurück in die linke Seitenleiste",
-  "cfg.location": "Wo das Panel lebt: in der Aktivitätsleiste links oder in der sekundären Seitenleiste rechts, neben dem Chat. Der Spiegel-Button in der Titelleiste des Panels ändert diese Einstellung ebenfalls."
+  "cfg.statusBarWeek": "Das Wochenlimit zusätzlich in der Statusleiste anzeigen, nach der Sitzung."
 }

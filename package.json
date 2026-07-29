@@ -62,13 +62,6 @@
           "title": "%view.container%",
           "icon": "media/activity-bar.svg"
         }
-      ],
-      "secondarySideBar": [
-        {
-          "id": "claudeRateLimitAux",
-          "title": "%view.container%",
-          "icon": "media/activity-bar.svg"
-        }
       ]
     },
     "views": {
@@ -76,21 +69,12 @@
         {
           "type": "webview",
           "id": "claudeLimits.panel",
-          "name": "%view.panel%",
-          "when": "!claudeLimits.inSecondary"
+          "name": "%view.panel%"
         },
         {
           "id": "claudeLimits.gauge",
           "name": "%view.gauge%",
           "visibility": "collapsed"
-        }
-      ],
-      "claudeRateLimitAux": [
-        {
-          "type": "webview",
-          "id": "claudeLimits.panelAux",
-          "name": "%view.panel%",
-          "when": "claudeLimits.inSecondary"
         }
       ]
     },
@@ -102,28 +86,16 @@
         "icon": "$(sparkle)"
       },
       {
-        "command": "claudeLimits.maximize",
-        "category": "%cat.limits%",
-        "title": "%cmd.maximize%",
-        "icon": "$(screen-full)"
-      },
-      {
         "command": "claudeLimits.refresh",
         "category": "%cat.limits%",
         "title": "%cmd.refresh%",
         "icon": "$(refresh)"
       },
       {
-        "command": "claudeLimits.moveToSecondary",
+        "command": "claudeLimits.moveView",
         "category": "%cat.limits%",
-        "title": "%cmd.moveToSecondary%",
-        "icon": "$(layout-sidebar-right)"
-      },
-      {
-        "command": "claudeLimits.moveToPrimary",
-        "category": "%cat.limits%",
-        "title": "%cmd.moveToPrimary%",
-        "icon": "$(layout-sidebar-left)"
+        "title": "%cmd.moveView%",
+        "icon": "$(layout)"
       },
       {
         "command": "claudeVault.show",
@@ -192,6 +164,12 @@
         "icon": "$(plug)"
       },
       {
+        "command": "claudeVault.disconnect",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.disconnect%",
+        "icon": "$(debug-disconnect)"
+      },
+      {
         "command": "claudeVault.revokeAll",
         "category": "%cat.vault%",
         "title": "%cmd.vault.revokeAll%",
@@ -225,28 +203,18 @@
     "menus": {
       "view/title": [
         {
-          "command": "claudeLimits.maximize",
-          "when": "view == claudeLimits.panelAux",
-          "group": "navigation@0"
-        },
-        {
           "command": "claudeVault.settings",
-          "when": "view == claudeLimits.panel || view == claudeLimits.panelAux",
+          "when": "view == claudeLimits.panel",
           "group": "navigation@1"
         },
         {
           "command": "claudeLimits.refresh",
-          "when": "view == claudeLimits.panel || view == claudeLimits.panelAux || view == claudeLimits.gauge",
+          "when": "view == claudeLimits.panel || view == claudeLimits.gauge",
           "group": "navigation@2"
         },
         {
-          "command": "claudeLimits.moveToSecondary",
+          "command": "claudeLimits.moveView",
           "when": "view == claudeLimits.panel",
-          "group": "navigation@3"
-        },
-        {
-          "command": "claudeLimits.moveToPrimary",
-          "when": "view == claudeLimits.panelAux || (view == claudeLimits.gauge && claudeLimits.inSecondary)",
           "group": "navigation@3"
         }
       ],
@@ -349,15 +317,6 @@
           "type": "boolean",
           "default": true,
           "description": "%cfg.showCredits%"
-        },
-        "claudeLimits.location": {
-          "type": "string",
-          "enum": [
-            "sidebar",
-            "secondarySidebar"
-          ],
-          "default": "sidebar",
-          "description": "%cfg.location%"
         }
       }
     }

@@ -141,25 +141,32 @@ function busEnv() {
 }
 
 // --- Windows: DPAPI, CurrentUser scope. The wrapped blob lives in the key file.
-function powershell(script) {
+function powershell(script, env) {
   return runIn('powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '-'], script);
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '-'], script, env);
+}
+
+// The payload travels in an ENVIRONMENT VARIABLE, never inside the script text.
+// Embedded as a literal, it was captured verbatim by PowerShell Script Block
+// Logging and by transcription — meaning the key that decrypts the entire vault
+// ended up in clear in a persistent Windows event log, readable by any machine
+// administrator. The script itself is now a constant, so logging it reveals
+// nothing. Environment blocks are not written to those logs.
+function dpapiScript(verb) {
+  return "Add-Type -AssemblyName System.Security\n" +
+    "$d = [Convert]::FromBase64String($env:CLAUDE_VAULT_BLOB)\n" +
+    "$p = [System.Security.Cryptography.ProtectedData]::" + verb + "($d, $null, 'CurrentUser')\n" +
+    "[Convert]::ToBase64String($p)\n";
 }
 
 function dpapiProtect(buf) {
-  return unb64(powershell(
-    "Add-Type -AssemblyName System.Security\n" +
-    "$d = [Convert]::FromBase64String('" + b64(buf) + "')\n" +
-    "$p = [System.Security.Cryptography.ProtectedData]::Protect($d, $null, 'CurrentUser')\n" +
-    "[Convert]::ToBase64String($p)\n"));
+  return unb64(powershell(dpapiScript('Protect'),
+    Object.assign({}, process.env, { CLAUDE_VAULT_BLOB: b64(buf) })));
 }
 
 function dpapiUnprotect(buf) {
-  return unb64(powershell(
-    "Add-Type -AssemblyName System.Security\n" +
-    "$d = [Convert]::FromBase64String('" + b64(buf) + "')\n" +
-    "$p = [System.Security.Cryptography.ProtectedData]::Unprotect($d, $null, 'CurrentUser')\n" +
-    "[Convert]::ToBase64String($p)\n"));
+  return unb64(powershell(dpapiScript('Unprotect'),
+    Object.assign({}, process.env, { CLAUDE_VAULT_BLOB: b64(buf) })));
 }
 
 const KEYRING_SERVICE = 'claude-vault';
@@ -285,6 +292,14 @@ function masterKey() {
   if (_master) return _master;
   ensureDirs();
   if (!fs.existsSync(KEY_PATH)) {
+    // A vault that still holds secrets with no key file beside it is NOT a
+    // fresh install. Generating a new key here would make every one of those
+    // secrets undecryptable, and the next load would then accuse the user of
+    // tampering with a file they never touched. Refuse, and leave them the two
+    // deliberate ways out: restore a backup, or revoke everything.
+    if (fs.existsSync(VAULT_PATH)) {
+      throw fail('the key file is missing while the vault still holds secrets: restore a backup of the vault directory, or revoke every key to start over');
+    }
     const key = crypto.randomBytes(32);
     storeKey(key, 0);
     _master = key;
@@ -302,8 +317,15 @@ function currentSeq() {
   try { return readKeyFile().seq || 0; } catch (e) { return 0; }
 }
 
+// Only the counter moves. The key material is already where it belongs — in
+// the OS store, or wrapped in this very file — so re-running the whole provider
+// chain here was both wasteful and dangerous: it spawned PowerShell twice on
+// every single write, and one transient hiccup from the OS store was enough to
+// silently rewrite the master key in the clear on disk, under mode 'plain'.
 function bumpSeq(next) {
-  storeKey(masterKey(), next);   // masterKey() first: it resolves the current mode
+  masterKey();                       // resolves the current mode, cached per process
+  const kf = readKeyFile();
+  writeAtomic(KEY_PATH, JSON.stringify({ v: 1, mode: kf.mode, blob: kf.blob, seq: next }));
 }
 
 function derive(info, salt, len) {
@@ -345,13 +367,18 @@ function loadRaw() {
 }
 
 function saveRaw(v, structural) {
-  if (structural) {
-    v.seq = (v.seq || 0) + 1;
-    bumpSeq(v.seq);
-  }
+  if (structural) v.seq = (v.seq || 0) + 1;
   v.audit = pruneAudit(v.audit);
   v.mac = fileMac(v.secrets, v.seq || 0);
   writeAtomic(VAULT_PATH, JSON.stringify(v, null, 0));
+  // The counter moves ONLY once the vault is safely on disk. Bumping it first
+  // — as this did — meant that any interruption in between (crash, power cut,
+  // the OS killing the process) left the key file one ahead of the vault, and
+  // loadRaw() then refused the whole file as a replay: every secret lost, for
+  // good. In this order an interruption leaves the counter one behind, which
+  // loadRaw() accepts, and the anti-replay guarantee still holds for the case
+  // it exists to cover: an older vault put back in place.
+  if (structural) bumpSeq(v.seq);
 }
 
 // The log is bounded on two axes, and both matter for a different reason.
@@ -1161,6 +1188,13 @@ function issue(level, e) {
 function healthCheck() {
   const issues = [];
   ensureDirs();
+  // Nothing has been created yet: say so instead of CREATING it. This runs on
+  // the panel's render path, and forcing the master key into existence there
+  // meant two blocking PowerShell spawns on the extension host at first paint,
+  // on a machine where the user may never store a single secret.
+  if (!fs.existsSync(KEY_PATH) && !fs.existsSync(VAULT_PATH)) {
+    return { ok: true, issues, mode: null };
+  }
   try {
     masterKey();
   } catch (e) {

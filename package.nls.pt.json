@@ -32,9 +32,5 @@
   "cfg.badge": "Mostrar um emblema com a percentagem da sessão no ícone da barra de atividades.",
   "cfg.statusBarPosition": "Que lado da barra de estado mostra o valor de utilização.",
   "cfg.statusBarStyle": "Como a barra de estado mostra o valor: clássico, cor Claude ou uma pastilha colorida vistosa.",
-  "cfg.statusBarWeek": "Mostrar também o limite semanal na barra de estado, depois da sessão.",
-  "cmd.maximize": "Maximizar ou restaurar o painel",
-  "cmd.moveToSecondary": "Mover para a barra lateral secundária",
-  "cmd.moveToPrimary": "Voltar para a barra lateral esquerda",
-  "cfg.location": "Onde o painel vive: na barra de atividades à esquerda, ou na barra lateral secundária à direita, ao lado do chat. O botão espelho na barra de título do painel também alterna esta definição."
+  "cfg.statusBarWeek": "Mostrar também o limite semanal na barra de estado, depois da sessão."
 }

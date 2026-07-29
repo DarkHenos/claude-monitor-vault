@@ -32,9 +32,5 @@
   "cfg.badge": "Mostrar un distintivo con el porcentaje de la sesión en el icono de la barra de actividad.",
   "cfg.statusBarPosition": "Qué lado de la barra de estado muestra la cifra de uso.",
   "cfg.statusBarStyle": "Cómo se ve la cifra en la barra de estado: clásico, color Claude o una pastilla de color llamativa.",
-  "cfg.statusBarWeek": "Mostrar también el límite semanal en la barra de estado, después de la sesión.",
-  "cmd.maximize": "Maximizar o restaurar el panel",
-  "cmd.moveToSecondary": "Mover a la barra lateral secundaria",
-  "cmd.moveToPrimary": "Volver a la barra lateral izquierda",
-  "cfg.location": "Dónde vive el panel: la barra de actividad a la izquierda, o la barra lateral secundaria a la derecha, junto al chat. El botón espejo en la barra de título del panel también alterna este ajuste."
+  "cfg.statusBarWeek": "Mostrar también el límite semanal en la barra de estado, después de la sesión."
 }

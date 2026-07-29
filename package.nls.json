@@ -9,6 +9,7 @@
   "cat.vault": "Claude Vault",
   "cmd.open": "Open the panel",
   "cmd.refresh": "Refresh usage",
+  "cmd.moveView": "Move the panel (side bar, next to the chat, bottom panel...)",
   "cmd.vault.show": "Open the vault",
   "cmd.vault.add": "Add a key",
   "cmd.vault.delete": "Delete key",
@@ -20,6 +21,7 @@
   "cmd.vault.settings": "Settings",
   "cmd.vault.audit": "Access log",
   "cmd.vault.connect": "Connect to Claude Code",
+  "cmd.vault.disconnect": "Disconnect from Claude Code",
   "cmd.vault.revokeAll": "Revoke everything",
   "cfg.pollSeconds": "Seconds between API calls. A cache shared across every VS Code window means one real request feeds them all.",
   "cfg.alerts": "Notify when the 5-hour session reaches 80% then 95%, and the weekly limit 90%.",
@@ -33,9 +35,5 @@
   "cfg.badge": "Show a badge with the session percentage on the activity-bar icon.",
   "cfg.statusBarPosition": "Which side of the status bar shows the usage figure.",
   "cfg.statusBarStyle": "How the status-bar figure looks: classic, Claude colour, or a prominent coloured pill.",
-  "cfg.statusBarWeek": "Also show the weekly limit in the status bar, after the session.",
-  "cmd.maximize": "Maximize or restore the panel",
-  "cmd.moveToSecondary": "Move to the secondary side bar",
-  "cmd.moveToPrimary": "Move back to the left side bar",
-  "cfg.location": "Where the panel lives: the activity bar on the left, or the secondary side bar on the right, next to the chat. The mirror button in the panel's title bar toggles this too."
+  "cfg.statusBarWeek": "Also show the weekly limit in the status bar, after the session."
 }

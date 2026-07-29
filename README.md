@@ -37,22 +37,19 @@ language.
 
 - **Panel**, one row per limit (session, week, week Opus, week Sonnet), each
   with a progress bar, a percentage and a countdown to reset. Quotas on top,
-  secrets below, in a single view. A **mirror button** in its title bar moves it
-  between the left side bar (the default) and the secondary side bar on the
-  right, next to the chat, and the choice is remembered.
+  secrets below, in a single view. It opens in the left side bar, and the
+  **move button** in its title bar hands it to VS Code's own picker: put it in
+  the secondary side bar next to the chat, in the bottom panel, wherever suits
+  you. The workbench remembers, and dragging the view by hand does the same.
 - **Left icon, always.** The activity-bar icon never leaves the left edge,
-  wherever the panel lives. It carries a numeric badge with the session
+  wherever the panel ends up. It carries a numeric badge with the session
   percentage — the bare figure on the icon, the "%" sign in the tooltip, since a
-  VS Code badge can only carry a number — and the badge shows **only there**,
-  never on the secondary side bar.
+  VS Code badge can only carry a number.
 - **Limits**, a collapsed one-liner under the panel showing `4% 5h · 11% week`
   in its own title row. It is what carries the badge, so the figure is on the
   icon from startup without waiting for the panel to be opened. Move the panel
-  to the right and this line takes its place on the left; click any of its rows
+  elsewhere and this line keeps the figures on the left; click any of its rows
   to bring the panel back into view.
-- **Maximize**, when the panel is on the right: one button expands the
-  secondary side bar over the editor and restores it, VS Code's native
-  maximize.
 - **Status bar**, a compact figure such as `session: 8%`, with the week added on
   request, a coloured pill by default or the plain theme, on the left or the right.
   The full breakdown shows on hover.

@@ -25,7 +25,54 @@ vault, and nothing explained why.
 - README brought back in line: it still described the old default and promised a
   click-to-recall gesture that 0.58.0 had removed.
 
+### The panel had a home that did not exist
+
+- **The secondary side bar container was never real.** An extension cannot
+  declare one there — `contributes.viewsContainers` only accepts `activitybar`
+  and `panel` — so VS Code dropped the second panel into the **Explorer** and
+  said so in its log at every window launch. Sending the panel “next to the
+  chat” therefore sent it somewhere else entirely. There is now a single panel,
+  in one real container, and the title-bar button hands relocation to VS Code's
+  own picker: the secondary side bar, the bottom panel, wherever you want, and
+  the workbench remembers it. Dragging the view by hand does the same. The
+  `claudeLimits.location` setting is gone with the mechanism it drove.
+
+### Vault: nothing can be lost any more
+
+- **An interruption could make the whole vault unreadable, permanently.** The
+  replay counter was raised *before* the vault was written, so a crash between
+  the two left the counter one ahead and every later load refused the file as a
+  replay — every secret gone. The counter now moves only once the vault is
+  safely on disk, and the anti-replay guarantee is unchanged for the case it
+  exists to cover.
+- **A passing glitch from the OS keyring silently wrote the master key in the
+  clear.** Saving the vault re-ran the whole protection chain each time, so one
+  hiccup was enough to fall back to `plain` — twice per write on Windows, at
+  that. Updating the counter no longer touches the key material at all.
+- **A missing key file no longer regenerates one in silence**, which made every
+  stored secret undecryptable and then blamed the user for tampering. It now
+  refuses and points to the two deliberate ways out.
+- **The master key no longer travels inside a PowerShell script.** Embedded as
+  a literal, it was captured verbatim by Script Block Logging — the key to the
+  entire vault, in clear, in a persistent Windows event log. It goes through the
+  environment now; the script is a constant.
+- **The panel no longer creates the master key just by being drawn.** On a
+  machine where no secret is ever stored, opening it used to force the key into
+  existence and block the extension host on several system calls.
+
 ### Also in this release
+
+- **A way back.** The extension writes into Claude Code's own configuration —
+  hooks, and every local stdio MCP server rewired through its proxy — and
+  nothing undid it: uninstalling left the hooks firing and the servers pointing
+  at a bridge about to vanish. A **Disconnect** command now removes the hooks
+  and restores the servers, keeping the vault and its keys.
+- “Allow for MCP” in the key menu did nothing: it shared its action id with
+  “Use in an MCP server”, so it opened the snippet dialog instead. The
+  authorisation can be granted and revoked again.
+- Looking for `node` no longer opens a login shell, and gives up after three
+  seconds. Loading a full shell profile — nvm, rbenv, oh-my-zsh — froze every
+  extension in the process before the first figure was drawn.
 
 - The `User-Agent` sent to Anthropic announced `claude-limits-vscode/0.9`, long
   after the extension had been renamed and had reached 0.58. It is now read from

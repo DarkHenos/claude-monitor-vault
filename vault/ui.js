@@ -355,9 +355,12 @@ function activateVault(context, version, onChange) {
       { label: '$(server) ' + t('Use in an MCP server'), description: t('launcher configuration'), act: 'mcp' },
       { label: '$(clock) ' + t('Change expiry'), description: s.maxUses
           ? t('counted uses') : (s.expiresAt ? t('scheduled') : t('none')), act: 'ttl' },
+      // Its own action id: sharing 'mcp' with the entry above made the first
+      // test win, so this one opened the snippet dialog and the authorisation
+      // could be neither granted nor revoked from here.
       { label: (s.mcp ? '$(circle-slash) ' + t('Remove MCP authorisation')
                       : '$(plug) ' + t('Allow for MCP')),
-        description: s.mcp ? t('currently allowed') : t('denied by default'), act: 'mcp' },
+        description: s.mcp ? t('currently allowed') : t('denied by default'), act: 'mcptoggle' },
       { label: '$(eye) ' + t('Reveal'),
         description: t('copies the plain value to the clipboard'), act: 'reveal' },
       { label: '$(trash) ' + t('Delete'), description: t('irreversible'), act: 'del' }
@@ -367,7 +370,7 @@ function activateVault(context, version, onChange) {
     if (choice.act === 'info') return showDetails(name);
     if (choice.act === 'mcp') return mcpSnippet(name);
     if (choice.act === 'ttl') return changeTtl(name);
-    if (choice.act === 'mcp') return toggleMcp(name);
+    if (choice.act === 'mcptoggle') return toggleMcp(name);
     if (choice.act === 'reveal') return revealKey(name);
     if (choice.act === 'del') return deleteKey(name);
   }
@@ -994,6 +997,28 @@ ${entries.length
     }
   }
 
+  // The way back. This extension writes into another product's configuration —
+  // hooks in settings.json, every local stdio MCP server rewired through the
+  // proxy — and until now nothing undid it: uninstalling the extension left the
+  // hooks firing on every tool call and the servers pointing at a bridge that
+  // was about to disappear. Reversible in theory is not the same as reversible
+  // in reach, so here is the button.
+  async function disconnect() {
+    const go = t('Disconnect');
+    const answer = await vscode.window.showWarningMessage(
+      t('Remove the Claude Code hooks and restore the MCP servers? The vault and its keys are kept.'),
+      { modal: true }, go);
+    if (answer !== go) return;
+    try {
+      installer.uninstall();
+      notify();
+      vscode.window.showInformationMessage(
+        t('Disconnected from Claude Code. Restart a session for it to take effect.'));
+    } catch (e) {
+      vscode.window.showErrorMessage(t('Cannot disconnect: {0}', errText(e)));
+    }
+  }
+
   context.subscriptions.push(
     vscode.commands.registerCommand('claudeVault.add', addKey),
     vscode.commands.registerCommand('claudeVault.delete', deleteKey),
@@ -1006,6 +1031,7 @@ ${entries.length
     vscode.commands.registerCommand('claudeVault.audit', showAudit),
     vscode.commands.registerCommand('claudeVault.revokeAll', revokeAll),
     vscode.commands.registerCommand('claudeVault.connect', connect),
+    vscode.commands.registerCommand('claudeVault.disconnect', disconnect),
     vscode.commands.registerCommand('claudeVault.details', showDetails),
     vscode.commands.registerCommand('claudeVault.mcpSnippet', mcpSnippet),
     vscode.commands.registerCommand('claudeVault.setNote', editNote),
