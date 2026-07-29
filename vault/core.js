@@ -1243,7 +1243,10 @@ function healthCheck() {
   }
   try { loadRaw(); }
   catch (e) { issues.push(issue('error', e)); }
-  return { ok: !issues.some(i => i.level === 'error'), issues, mode: _masterMode };
+  // `downgrade` is raw diagnostic data, never shown as-is: it carries the exact
+  // reason the OS store was refused, which is the only thing that makes a
+  // fallback debuggable from a machine one does not own.
+  return { ok: !issues.some(i => i.level === 'error'), issues, mode: _masterMode, downgrade: _downgrade };
 }
 
 module.exports = {

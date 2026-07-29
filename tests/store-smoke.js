@@ -59,6 +59,7 @@ try {
   console.log('    platform : ' + process.platform);
   console.log('    mode     : ' + kf.mode);
   console.log('    issues   : ' + (issues.length ? issues.join(' | ') : 'none'));
+  if (health.downgrade) console.log('    refused  : ' + health.downgrade);
 
   if (expect) {
     check('protection mode is ' + expect, kf.mode === expect, 'got ' + kf.mode);

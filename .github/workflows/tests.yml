@@ -68,15 +68,30 @@ jobs:
         with: { node-version: '20' }
       # A CI runner has no interactive login keychain: we make an unlocked one
       # the default so `security` behaves as it does in a real session.
-      - name: The login keychain holds the master key
-        env:
-          EXPECT_MODE: keychain
+      - name: Prepare an unlocked default keychain
         run: |
           security create-keychain -p ci-pass ci.keychain
           security default-keychain -s ci.keychain
           security unlock-keychain -p ci-pass ci.keychain
           security set-keychain-settings ci.keychain
-          node tests/store-smoke.js
+      # Raw probe of the exact interaction the vault relies on, so a failure
+      # names itself instead of hiding behind a fallback.
+      - name: Probe the security interaction
+        continue-on-error: true
+        run: |
+          set +e
+          echo '--- interactive add (-i), the argv-free path ---'
+          printf 'add-generic-password -U -s claude-vault -a probe -D "Claude Vault master key" -w "QUJD"\n' | security -i
+          echo "exit=$?"
+          echo '--- read back ---'
+          security find-generic-password -s claude-vault -a probe -w
+          echo "exit=$?"
+          security delete-generic-password -s claude-vault -a probe >/dev/null 2>&1
+          exit 0
+      - name: The login keychain holds the master key
+        env:
+          EXPECT_MODE: keychain
+        run: node tests/store-smoke.js
 
   store-linux:
     runs-on: ubuntu-latest
