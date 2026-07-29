@@ -77,7 +77,7 @@
           "type": "webview",
           "id": "claudeLimits.panel",
           "name": "%view.panel%",
-          "when": "claudeLimits.inPrimary"
+          "when": "!claudeLimits.inSecondary"
         },
         {
           "id": "claudeLimits.gauge",
@@ -90,7 +90,7 @@
           "type": "webview",
           "id": "claudeLimits.panelAux",
           "name": "%view.panel%",
-          "when": "!claudeLimits.inPrimary"
+          "when": "claudeLimits.inSecondary"
         }
       ]
     },
@@ -246,7 +246,7 @@
         },
         {
           "command": "claudeLimits.moveToPrimary",
-          "when": "view == claudeLimits.panelAux || (view == claudeLimits.gauge && !claudeLimits.inPrimary)",
+          "when": "view == claudeLimits.panelAux || (view == claudeLimits.gauge && claudeLimits.inSecondary)",
           "group": "navigation@3"
         }
       ],

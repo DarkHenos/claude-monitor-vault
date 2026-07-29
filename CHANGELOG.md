@@ -25,6 +25,34 @@ vault, and nothing explained why.
 - README brought back in line: it still described the old default and promised a
   click-to-recall gesture that 0.58.0 had removed.
 
+### Also in this release
+
+- The `User-Agent` sent to Anthropic announced `claude-limits-vscode/0.9`, long
+  after the extension had been renamed and had reached 0.58. It is now read from
+  the manifest, so it can never drift again.
+- The panel no longer flickers from one side to the other at startup. The
+  context key that decides which side hosts it is unset until the extension
+  activates, and it was phrased so that this unset state meant “secondary side
+  bar”. With the new default that would have shown the panel on the right for a
+  moment on every launch, then moved it.
+- Opening the panel could have thrown a `ReferenceError`: the webview provider
+  was registered before the view it draws its header from was created. The order
+  is now explicit.
+- Adding a secret through a slow pipe span a CPU core at 100 % until the tool
+  timed out, because the synchronous read loop retried without ever yielding.
+- The MCP snippets offered in the interface used a bare `node`, while the
+  installer writes an absolute path. A VS Code started from the Finder inherits
+  a `PATH` that holds neither a Homebrew node nor an nvm shim, so a copied
+  snippet died with an unexplained `ENOENT`. Both now use the resolved
+  interpreter.
+- Two windows could disagree on the shared cache: change detection keyed on
+  size and modification time alone, which are identical for two same-length
+  writes within the same second on a filesystem with one-second granularity
+  (HFS+, some network mounts). The key now includes the inode, which a rename
+  changes on every write.
+- On Windows, a cache write colliding with another window's read fell straight
+  back to a non-atomic overwrite. It now retries the atomic rename first.
+
 An existing install that never moved the panel will find it on the left after
 this update; the mirror button puts it back on the right.
 

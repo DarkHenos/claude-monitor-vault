@@ -23,7 +23,10 @@ const os = require('os');
 const { execFile } = require('child_process');
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
-const UA = 'claude-limits-vscode/0.9';
+// Read from the manifest rather than hard-coded: it used to announce
+// "claude-limits-vscode/0.9" long after the extension had been renamed and had
+// reached 0.58, and that string goes out to Anthropic on every single call.
+const UA = 'claude-monitor-vault/' + require('./package.json').version;
 // Claude Code honours CLAUDE_CONFIG_DIR. Hard-coding ~/.claude would read a
 // token, and write a shared cache, in a directory Claude Code never looks at.
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -378,7 +381,12 @@ function readCache() {
   let st;
   try { st = fs.statSync(CACHE_PATH); }
   catch (e) { cacheKey = ''; cacheVal = null; return null; }
-  const key = st.mtimeMs + ':' + st.size;
+  // The inode is part of the key: writeCache goes through a rename, so every
+  // write lands on a fresh one. Without it, two writes of the same length
+  // within the same second are indistinguishable on a filesystem whose mtime
+  // has one-second granularity (HFS+, some NFS/CIFS mounts) and the window
+  // would keep showing stale figures.
+  const key = st.mtimeMs + ':' + st.size + ':' + st.ino;
   if (key === cacheKey) return cacheVal;
   try {
     const c = JSON.parse(fs.readFileSync(CACHE_PATH, 'utf8'));
@@ -402,7 +410,18 @@ function writeCache(rows, alerted, credits) {
     // macOS/Linux, readable by every account on the machine, whereas on Windows
     // it inherits the profile ACL. The rest of ~/.claude is user-only.
     fs.writeFileSync(CACHE_TMP, txt, { mode: 0o600 });
-    fs.renameSync(CACHE_TMP, CACHE_PATH);
+    // On Windows a rename over a file another window is reading fails with
+    // EPERM/EBUSY (sharing violation). Those reads last microseconds, so a
+    // couple of retries almost always win, and they are worth trying: the
+    // fallback below is a non-atomic write straight over the live file.
+    let renamed = false;
+    for (let i = 0; i < 3 && !renamed; i++) {
+      try { fs.renameSync(CACHE_TMP, CACHE_PATH); renamed = true; }
+      catch (e) {
+        if (i === 2) throw e;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+    }
   } catch (e) {
     try { fs.unlinkSync(CACHE_TMP); } catch (_) { /* nothing to clean up */ }
     try { fs.writeFileSync(CACHE_PATH, txt, { mode: 0o600 }); } catch (_) { return at; }
@@ -411,7 +430,7 @@ function writeCache(rows, alerted, credits) {
   cacheVal = obj;
   try {
     const st = fs.statSync(CACHE_PATH);
-    cacheKey = st.mtimeMs + ':' + st.size;
+    cacheKey = st.mtimeMs + ':' + st.size + ':' + st.ino;   // same shape as readCache
   } catch (e) { cacheKey = ''; }
   return at;
 }
@@ -447,14 +466,40 @@ function activate(context) {
     console.error('Claude Vault unavailable:', e);
   }
 
+  // The one-line summary that always sits on the left, under the panel and
+  // collapsed, or alone in its place when the panel has moved to the secondary
+  // side bar. It carries the activity-bar badge, and that is why it is built
+  // BEFORE the webview provider is registered: resolveWebviewView() calls
+  // renderHeaders(), which reads gaugeView. Registered the other way round, the
+  // const would still be in its temporal dead zone and opening the panel would
+  // throw a ReferenceError.
+  const gaugeEmitter = new vscode.EventEmitter();
+  const gaugeView = vscode.window.createTreeView('claudeLimits.gauge', {
+    treeDataProvider: {
+      onDidChangeTreeData: gaugeEmitter.event,
+      getChildren: () => (last ? last.rows : []),
+      getTreeItem(r) {
+        const it = new vscode.TreeItem(r.label);
+        it.description = Math.round(r.pct) + '% · ' + etaText(r.resetAt);
+        it.iconPath = new vscode.ThemeIcon(
+          r.level === 'crit' ? 'error' : r.level === 'warn' ? 'warning' : 'pulse');
+        it.command = { command: 'claudeLimits.open', title: r.label };
+        return it;
+      }
+    }
+  });
+  context.subscriptions.push(gaugeView, gaugeEmitter);
+
   // --- THE PANEL: single webview (quota bars, secrets, ghost skeleton).
   // No retainContextWhenHidden: the webview restores its state via getState/setState
   // and we push data back to it whenever it becomes visible again.
   // One provider, two view ids: the activity-bar view and its twin in the
-  // secondary side bar. The claudeLimits.inPrimary context key keeps them
+  // secondary side bar. The claudeLimits.inSecondary context key keeps them
   // mutually exclusive, so webviewView always points at the only live one.
-  // The key is phrased so that its unset state (before activation) matches
-  // the default home, the secondary side bar: no icon flash at startup.
+  // The key is phrased NEGATIVELY on purpose: unset — which is what it is until
+  // activation sets it — must resolve to the default home, now the primary side
+  // bar. Phrased the other way round, every startup would show the panel on the
+  // right for a moment and then move it.
   const panelProvider = {
     resolveWebviewView(v) {
       webviewView = v;
@@ -488,7 +533,7 @@ function activate(context) {
     return inSecondary() ? 'claudeLimits.panelAux' : 'claudeLimits.panel';
   }
   function applyLocation() {
-    return vscode.commands.executeCommand('setContext', 'claudeLimits.inPrimary', !inSecondary());
+    return vscode.commands.executeCommand('setContext', 'claudeLimits.inSecondary', inSecondary());
   }
   applyLocation();
 
@@ -499,37 +544,13 @@ function activate(context) {
       cfgCache = null;
       await applyLocation();
       if (loc === 'secondarySidebar') {
-        // The primary side bar would linger open on the gauge alone, and that
-        // very gauge becoming visible is what the click-to-recall listener
-        // below watches: fold the bar instead of bouncing the panel back.
+        // The primary side bar would otherwise linger open on the summary line
+        // alone, which reads as if the move had failed: fold it instead.
         vscode.commands.executeCommand('workbench.action.closeSidebar');
       }
       vscode.commands.executeCommand(activePanelId() + '.focus');
     } catch (e) { /* the location is a preference: never break on it */ }
   }
-
-  // The activity-bar icon must survive the panel's move to the secondary
-  // side bar, so a feather-weight tree view takes the panel's slot on the
-  // left (the when-clauses swap them): same icon, the percentage badge, one
-  // row per limit, and any click reopens the real panel. A TreeView's badge
-  // exists from creation, so it is the only reliable carrier in the sidebar
-  // (a webview's badge only exists once the view has been opened).
-  const gaugeEmitter = new vscode.EventEmitter();
-  const gaugeView = vscode.window.createTreeView('claudeLimits.gauge', {
-    treeDataProvider: {
-      onDidChangeTreeData: gaugeEmitter.event,
-      getChildren: () => (last ? last.rows : []),
-      getTreeItem(r) {
-        const it = new vscode.TreeItem(r.label);
-        it.description = Math.round(r.pct) + '% · ' + etaText(r.resetAt);
-        it.iconPath = new vscode.ThemeIcon(
-          r.level === 'crit' ? 'error' : r.level === 'warn' ? 'warning' : 'pulse');
-        it.command = { command: 'claudeLimits.open', title: r.label };
-        return it;
-      }
-    }
-  });
-  context.subscriptions.push(gaugeView, gaugeEmitter);
 
   // Alignment is fixed at creation, so a change of side means rebuilding the
   // item. buildStatus is idempotent: it only recreates when the side actually

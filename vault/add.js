@@ -101,7 +101,15 @@ function readStdin() {
     try { n = fs.readSync(0, buf, 0, buf.length, null); }
     catch (e) {
       if (e.code === 'EOF') break;
-      if (e.code === 'EAGAIN') continue;      // pipe not ready yet
+      if (e.code === 'EAGAIN') {
+        // The pipe is not ready. Looping straight back would spin a core at
+        // 100 % until the tool times out, and fd 0 really is non-blocking here:
+        // reading process.stdin.isTTY above instantiates the stream, which sets
+        // O_NONBLOCK on POSIX. Atomics.wait is the only way to sleep in a
+        // synchronous read loop without pulling in a dependency.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+        continue;
+      }
       throw e;
     }
     if (!n) break;

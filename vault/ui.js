@@ -174,13 +174,19 @@ function activateVault(context, version, onChange) {
     // server's environment; the proxy lets the value be a tool argument while
     // keeping it out of the transcript. Both hold a marker in .mcp.json, never
     // a key, and neither is on the network path.
+    // The same interpreter the installer resolved, not a bare "node": a VS Code
+    // or Claude Code started from the Finder inherits the launchd PATH
+    // (/usr/bin:/bin:/usr/sbin:/sbin), which holds neither a Homebrew node nor
+    // an nvm shim, so the copied snippet would die on ENOENT with no clue why.
+    let nodeCmd = 'node';
+    try { nodeCmd = installer.nodeExec(); } catch (e) { /* keep the plain name */ }
     const launcherCfg = JSON.stringify({
-      command: 'node',
+      command: nodeCmd,
       args: [dir + '/env.js', '--', 'npx', '-y', 'YOUR_MCP_SERVER'],
       env: { [name]: marker }
     }, null, 2);
     const proxyCfg = JSON.stringify({
-      command: 'node',
+      command: nodeCmd,
       args: [dir + '/mcp-proxy.js', '--name', 'YOUR_SERVER_ID', '--', 'npx', '-y', 'YOUR_MCP_SERVER']
     }, null, 2);
 

@@ -333,5 +333,6 @@ function status(version) {
 
 module.exports = {
   install, uninstall, status, BRIDGE_DIR, SETTINGS, EVENTS,
-  wrapServers, unwrapServers, wrapMcpServers, unwrapMcpServers, CLAUDE_JSON, WRAP_MARK
+  wrapServers, unwrapServers, wrapMcpServers, unwrapMcpServers, CLAUDE_JSON, WRAP_MARK,
+  nodeExec
 };
