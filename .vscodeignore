@@ -5,6 +5,9 @@
 .git/**
 .github/**
 tests/**
+# Les captures sont servies par GitHub via des URL absolues : les embarquer
+# alourdirait le paquet sans rien y apporter.
+media/screenshots/**
 node_modules/**
 package-lock.json
 **/*.tmp

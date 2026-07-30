@@ -11,6 +11,32 @@ The panel lives in the **secondary side bar** by default — on the right, next
 to the chat, like Claude Code itself — and mirrors to the left side bar with
 one click, whichever you prefer.
 
+<!-- Absolute URLs on purpose: relative image paths render on GitHub but break
+     on the Marketplace page, which serves the readme from its own domain. -->
+<img src="https://raw.githubusercontent.com/DarkHenos/claude-monitor-vault/main/media/screenshots/window.png" alt="The panel in the left side bar of VS Code, showing the session and weekly limits above the list of stored keys" width="100%">
+
+<table>
+<tr>
+<td width="62%" valign="top">
+<img src="https://raw.githubusercontent.com/DarkHenos/claude-monitor-vault/main/media/screenshots/panel.png" alt="The panel: a progress bar per limit with its percentage and countdown, then the keys, in a single view" width="100%">
+</td>
+<td valign="top">
+
+**The panel.** One row per limit — session, week, and the per-model ones when
+they apply — each with its bar, its percentage and the time left before it
+resets. Underneath, the keys held in the vault: their name, their kind, their
+lifetime. Never their value.
+
+<img src="https://raw.githubusercontent.com/DarkHenos/claude-monitor-vault/main/media/screenshots/badge.png" alt="The activity-bar icon carrying a numeric badge with the session percentage" align="left" height="150" hspace="12">
+
+**The icon, wherever the panel is.** It never leaves the left edge and carries
+the session percentage as a badge — the bare figure, since a VS Code badge can
+only hold a number, with the "%" in the tooltip.
+
+</td>
+</tr>
+</table>
+
 ## Open source, local by design
 
 Every line this extension runs is public:
