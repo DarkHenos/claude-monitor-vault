@@ -2,6 +2,19 @@
 
 All notable changes to **Claude Monitor & Vault**.
 
+## 0.58.21 — 2026-07-30
+
+- **The extension page shows what the extension looks like.** Three screenshots
+  in the readme: the panel in a window, the panel on its own, and the
+  activity-bar icon with its counter.
+- Fixed how they are laid out. A percentage width is stretched to its container
+  by the Details tab in VS Code, which blew the panel screenshot up to the full
+  width of the page and dropped the floated icon on top of the text. The widths
+  are in pixels now, the cells hold plain HTML rather than markdown, and nothing
+  floats — so GitHub, the Marketplace and that tab render the same page.
+- The images are served from the repository over absolute URLs, so they add
+  nothing to the size of the download.
+
 ## 0.58.2 — 2026-07-30
 
 **A fresh install now opens on the real panel.** On a new VS Code profile the
