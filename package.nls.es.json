@@ -3,13 +3,11 @@
   "ext.description": "Tu compañero Claude en VS Code: seguimiento en directo del uso y los límites de Claude Code (sesión, semanal, Opus, Sonnet) en la barra lateral y la barra de estado, con alertas de umbral y seguimiento de créditos de pago. Incluye Claude Vault, un almacén local cifrado que permite que Claude use tus claves de API y secretos sin verlos nunca, en comandos de shell y herramientas MCP.",
   "view.container": "Claude Monitor",
   "view.panel": "Claude Monitor",
-  "view.gauge": "Límites",
   "cap.untrusted": "La extensión solo lee el token OAuth local y nunca ejecuta código del área de trabajo.",
   "cat.limits": "Claude Limits",
   "cat.vault": "Claude Vault",
   "cmd.open": "Abrir el panel",
   "cmd.refresh": "Actualizar uso",
-  "cmd.moveView": "Mover el panel (barra lateral, junto al chat, panel inferior…)",
   "cmd.vault.show": "Abrir la bóveda",
   "cmd.vault.add": "Añadir una clave",
   "cmd.vault.delete": "Eliminar clave",
@@ -36,5 +34,9 @@
   "cfg.badge": "Mostrar un distintivo con el porcentaje de la sesión en el icono de la barra de actividad.",
   "cfg.statusBarPosition": "Qué lado de la barra de estado muestra la cifra de uso.",
   "cfg.statusBarStyle": "Cómo se ve la cifra en la barra de estado: clásico, color Claude o una pastilla de color llamativa.",
-  "cfg.statusBarWeek": "Mostrar también el límite semanal en la barra de estado, después de la sesión."
+  "cfg.statusBarWeek": "Mostrar también el límite semanal en la barra de estado, después de la sesión.",
+  "cfg.location": "Dónde vive el panel: la barra lateral secundaria a la derecha, junto al chat, o la barra de actividad a la izquierda. El botón espejo de la barra de título también cambia de lado.",
+  "cmd.moveToSecondary": "Mover junto al chat",
+  "cmd.moveToPrimary": "Volver a la barra lateral izquierda",
+  "welcome.movedRight": "El panel está junto al chat.\n[Traerlo de vuelta a la izquierda](command:claudeLimits.moveToPrimary)"
 }

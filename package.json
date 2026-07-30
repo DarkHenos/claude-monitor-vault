@@ -16,7 +16,7 @@
   "homepage": "https://github.com/DarkHenos/claude-monitor-vault#readme",
   "icon": "icon.png",
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.106.0"
   },
   "categories": [
     "Other",
@@ -58,23 +58,40 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "claudeRateLimit",
+          "id": "claudeMonitorVault",
+          "title": "%view.container%",
+          "icon": "media/activity-bar.svg"
+        }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "claudeMonitorVaultAux",
           "title": "%view.container%",
           "icon": "media/activity-bar.svg"
         }
       ]
     },
     "views": {
-      "claudeRateLimit": [
+      "claudeMonitorVault": [
         {
           "type": "webview",
-          "id": "claudeLimits.panel",
-          "name": "%view.panel%"
+          "id": "claudeMonitorVault.panel",
+          "name": "%view.panel%",
+          "when": "!claudeLimits.inSecondary"
         },
         {
-          "id": "claudeLimits.gauge",
-          "name": "%view.gauge%",
+          "id": "claudeMonitorVault.summary",
+          "name": "%view.panel%",
+          "when": "claudeLimits.inSecondary",
           "visibility": "collapsed"
+        }
+      ],
+      "claudeMonitorVaultAux": [
+        {
+          "type": "webview",
+          "id": "claudeMonitorVaultAux.panel",
+          "name": "%view.panel%",
+          "when": "claudeLimits.inSecondary"
         }
       ]
     },
@@ -92,10 +109,16 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "claudeLimits.moveView",
+        "command": "claudeLimits.moveToSecondary",
         "category": "%cat.limits%",
-        "title": "%cmd.moveView%",
-        "icon": "$(layout)"
+        "title": "%cmd.moveToSecondary%",
+        "icon": "$(layout-sidebar-right)"
+      },
+      {
+        "command": "claudeLimits.moveToPrimary",
+        "category": "%cat.limits%",
+        "title": "%cmd.moveToPrimary%",
+        "icon": "$(layout-sidebar-left)"
       },
       {
         "command": "claudeVault.show",
@@ -204,17 +227,22 @@
       "view/title": [
         {
           "command": "claudeVault.settings",
-          "when": "view == claudeLimits.panel",
+          "when": "view == claudeMonitorVault.panel || view == claudeMonitorVaultAux.panel",
           "group": "navigation@1"
         },
         {
           "command": "claudeLimits.refresh",
-          "when": "view == claudeLimits.panel || view == claudeLimits.gauge",
+          "when": "view == claudeMonitorVault.panel || view == claudeMonitorVaultAux.panel || view == claudeMonitorVault.summary",
           "group": "navigation@2"
         },
         {
-          "command": "claudeLimits.moveView",
-          "when": "view == claudeLimits.panel",
+          "command": "claudeLimits.moveToSecondary",
+          "when": "view == claudeMonitorVault.panel",
+          "group": "navigation@3"
+        },
+        {
+          "command": "claudeLimits.moveToPrimary",
+          "when": "view == claudeMonitorVaultAux.panel || view == claudeMonitorVault.summary",
           "group": "navigation@3"
         }
       ],
@@ -285,6 +313,15 @@
           "default": true,
           "description": "%cfg.badge%"
         },
+        "claudeLimits.location": {
+          "type": "string",
+          "enum": [
+            "sidebar",
+            "secondarySidebar"
+          ],
+          "default": "secondarySidebar",
+          "description": "%cfg.location%"
+        },
         "claudeLimits.autoConnect": {
           "type": "boolean",
           "default": true,
@@ -324,7 +361,13 @@
           "description": "%cfg.showCredits%"
         }
       }
-    }
+    },
+    "viewsWelcome": [
+      {
+        "view": "claudeMonitorVault.summary",
+        "contents": "%welcome.movedRight%"
+      }
+    ]
   },
   "devDependencies": {
     "@vscode/vsce": "^3.9.2"

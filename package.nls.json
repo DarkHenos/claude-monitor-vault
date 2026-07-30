@@ -3,13 +3,11 @@
   "ext.description": "Your Claude companion in VS Code: live usage and rate-limit monitoring for Claude Code (session, weekly, Opus, Sonnet) in the sidebar and status bar, with threshold alerts and paid-credit tracking. Includes Claude Vault, an encrypted local store that lets Claude use your API keys and secrets without ever seeing them, in shell commands and MCP tools.",
   "view.container": "Claude Monitor",
   "view.panel": "Claude Monitor",
-  "view.gauge": "Limits",
   "cap.untrusted": "The extension only reads the local OAuth token and never runs workspace code.",
   "cat.limits": "Claude Limits",
   "cat.vault": "Claude Vault",
   "cmd.open": "Open the panel",
   "cmd.refresh": "Refresh usage",
-  "cmd.moveView": "Move the panel (side bar, next to the chat, bottom panel...)",
   "cmd.vault.show": "Open the vault",
   "cmd.vault.add": "Add a key",
   "cmd.vault.delete": "Delete key",
@@ -36,5 +34,9 @@
   "cfg.badge": "Show a badge with the session percentage on the activity-bar icon.",
   "cfg.statusBarPosition": "Which side of the status bar shows the usage figure.",
   "cfg.statusBarStyle": "How the status-bar figure looks: classic, Claude colour, or a prominent coloured pill.",
-  "cfg.statusBarWeek": "Also show the weekly limit in the status bar, after the session."
+  "cfg.statusBarWeek": "Also show the weekly limit in the status bar, after the session.",
+  "cfg.location": "Where the panel lives: the secondary side bar on the right, next to the chat, or the activity bar on the left. The mirror button in the panel title bar switches sides too.",
+  "cmd.moveToSecondary": "Move next to the chat",
+  "cmd.moveToPrimary": "Move back to the left side bar",
+  "welcome.movedRight": "The panel is next to the chat.\n[Bring it back to the left](command:claudeLimits.moveToPrimary)"
 }

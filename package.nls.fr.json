@@ -3,13 +3,11 @@
   "ext.description": "Ton compagnon Claude dans VS Code : suivi en direct de l'usage et des limites de Claude Code (session, hebdomadaire, Opus, Sonnet) dans la barre latérale et la barre d'état, avec alertes de seuil et suivi des crédits payants. Inclut Claude Vault, un coffre local chiffré qui permet à Claude d'utiliser tes clés API et secrets sans jamais les voir, dans les commandes shell et les outils MCP.",
   "view.container": "Claude Monitor",
   "view.panel": "Claude Monitor",
-  "view.gauge": "Limites",
   "cap.untrusted": "L'extension ne lit que le token OAuth local et n'exécute jamais de code du workspace.",
   "cat.limits": "Claude Limits",
   "cat.vault": "Claude Vault",
   "cmd.open": "Ouvrir le panneau",
   "cmd.refresh": "Actualiser l'usage",
-  "cmd.moveView": "Déplacer le panneau (barre latérale, à côté du chat, panneau du bas…)",
   "cmd.vault.show": "Ouvrir le coffre",
   "cmd.vault.add": "Ajouter une clé",
   "cmd.vault.delete": "Supprimer la clé",
@@ -36,5 +34,9 @@
   "cfg.badge": "Afficher un badge avec le pourcentage de la session sur l'icône de la barre d'activité.",
   "cfg.statusBarPosition": "Quel côté de la barre d'état affiche le chiffre d'usage.",
   "cfg.statusBarStyle": "L'aspect du chiffre dans la barre d'état : classique, couleur Claude, ou une pastille colorée voyante.",
-  "cfg.statusBarWeek": "Afficher aussi la limite hebdomadaire dans la barre d'état, après la session."
+  "cfg.statusBarWeek": "Afficher aussi la limite hebdomadaire dans la barre d'état, après la session.",
+  "cfg.location": "Où vit le panneau : la barre latérale secondaire à droite, à côté du chat, ou la barre d'activité à gauche. Le bouton miroir de la barre de titre change aussi de côté.",
+  "cmd.moveToSecondary": "Déplacer à côté du chat",
+  "cmd.moveToPrimary": "Revenir dans la barre latérale gauche",
+  "welcome.movedRight": "Le panneau est à côté du chat.\n[Le ramener à gauche](command:claudeLimits.moveToPrimary)"
 }

@@ -3,13 +3,11 @@
   "ext.description": "Dein Claude-Begleiter in VS Code: Live-Überwachung von Nutzung und Limits für Claude Code (Sitzung, wöchentlich, Opus, Sonnet) in der Seitenleiste und der Statusleiste, mit Schwellenwert-Benachrichtigungen und Tracking bezahlter Credits. Enthält Claude Vault, einen verschlüsselten lokalen Speicher, mit dem Claude deine API-Schlüssel und Geheimnisse nutzen kann, ohne sie jemals zu sehen, in Shell-Befehlen und MCP-Tools.",
   "view.container": "Claude Monitor",
   "view.panel": "Claude Monitor",
-  "view.gauge": "Limits",
   "cap.untrusted": "Die Erweiterung liest nur das lokale OAuth-Token und führt niemals Code aus dem Arbeitsbereich aus.",
   "cat.limits": "Claude Limits",
   "cat.vault": "Claude Vault",
   "cmd.open": "Panel öffnen",
   "cmd.refresh": "Nutzung aktualisieren",
-  "cmd.moveView": "Panel verschieben (Seitenleiste, neben den Chat, unteres Panel …)",
   "cmd.vault.show": "Tresor öffnen",
   "cmd.vault.add": "Schlüssel hinzufügen",
   "cmd.vault.delete": "Schlüssel löschen",
@@ -36,5 +34,9 @@
   "cfg.badge": "Ein Badge mit dem Prozentsatz der Sitzung auf dem Symbol der Aktivitätsleiste anzeigen.",
   "cfg.statusBarPosition": "Welche Seite der Statusleiste die Nutzungszahl anzeigt.",
   "cfg.statusBarStyle": "Wie die Zahl in der Statusleiste aussieht: klassisch, Claude-Farbe oder eine auffällige farbige Pille.",
-  "cfg.statusBarWeek": "Das Wochenlimit zusätzlich in der Statusleiste anzeigen, nach der Sitzung."
+  "cfg.statusBarWeek": "Das Wochenlimit zusätzlich in der Statusleiste anzeigen, nach der Sitzung.",
+  "cfg.location": "Wo das Panel lebt: in der sekundären Seitenleiste rechts, neben dem Chat, oder in der Aktivitätsleiste links. Die Spiegel-Schaltfläche in der Titelleiste wechselt die Seite ebenfalls.",
+  "cmd.moveToSecondary": "Neben den Chat verschieben",
+  "cmd.moveToPrimary": "Zurück in die linke Seitenleiste",
+  "welcome.movedRight": "Das Panel liegt neben dem Chat.\n[Zurück nach links holen](command:claudeLimits.moveToPrimary)"
 }

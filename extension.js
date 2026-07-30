@@ -65,6 +65,12 @@ function cfg() {
     statusBar: c.get('statusBar', true),
     pauseWhenExhausted: c.get('pauseWhenExhausted', true),
     showCredits: c.get('showCredits', true),
+    // Next to the chat by default, like Claude Code itself. The container in
+    // the secondary side bar is a real one since VS Code 1.106, hence the
+    // engine floor: the key is `secondarySidebar`, and the lowercase b matters
+    // — `secondarySideBar` was the proposed-API name, absent from the schema,
+    // silently ignored, and every view declared under it landed in the Explorer.
+    location: c.get('location', 'secondarySidebar'),   // secondarySidebar | sidebar
     badge: c.get('badge', true),      // activity-bar badge, on by default
     statusPos: c.get('statusBarPosition', 'right'),      // left | right
     statusStyle: c.get('statusBarStyle', 'prominent'),   // classic | accent | prominent
@@ -461,26 +467,19 @@ function activate(context) {
     console.error('Claude Vault unavailable:', e);
   }
 
-  // The one-line summary that always sits on the left, under the panel and
-  // collapsed, or alone in its place when the panel has moved to the secondary
-  // side bar. It carries the activity-bar badge, and that is why it is built
-  // BEFORE the webview provider is registered: resolveWebviewView() calls
-  // renderHeaders(), which reads gaugeView. Registered the other way round, the
-  // const would still be in its temporal dead zone and opening the panel would
-  // throw a ReferenceError.
+  // The left-hand placeholder, alive only while the panel sits next to the chat.
+  // VS Code hides a container as soon as every one of its views has a false
+  // when-clause, and a badge belongs to a view — so without something here, the
+  // icon and its counter vanish the moment the panel moves right. It carries NO
+  // rows: repeating the figures the panel already shows was the duplicate. Just
+  // a title, the summary in its description, the badge, and — once unfolded —
+  // the welcome text that says where the panel went and offers to bring it back.
   const gaugeEmitter = new vscode.EventEmitter();
-  const gaugeView = vscode.window.createTreeView('claudeLimits.gauge', {
+  const gaugeView = vscode.window.createTreeView('claudeMonitorVault.summary', {
     treeDataProvider: {
       onDidChangeTreeData: gaugeEmitter.event,
-      getChildren: () => (last ? last.rows : []),
-      getTreeItem(r) {
-        const it = new vscode.TreeItem(r.label);
-        it.description = Math.round(r.pct) + '% · ' + etaText(r.resetAt);
-        it.iconPath = new vscode.ThemeIcon(
-          r.level === 'crit' ? 'error' : r.level === 'warn' ? 'warning' : 'pulse');
-        it.command = { command: 'claudeLimits.open', title: r.label };
-        return it;
-      }
+      getChildren: () => [],
+      getTreeItem: i => i
     }
   });
   context.subscriptions.push(gaugeView, gaugeEmitter);
@@ -508,19 +507,36 @@ function activate(context) {
       renderHeaders();
     }
   };
+  // One provider, two view ids: the panel in the activity bar and its twin next
+  // to the chat. Both containers are real, so exactly one twin is alive at any
+  // time and webviewView always points at it.
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('claudeLimits.panel', panelProvider)
+    vscode.window.registerWebviewViewProvider('claudeMonitorVault.panel', panelProvider),
+    vscode.window.registerWebviewViewProvider('claudeMonitorVaultAux.panel', panelProvider)
   );
 
-  // ONE view, one home. There used to be a twin declared in a container of our
-  // own in the secondary side bar, swapped by a context key. VS Code does not
-  // support that: `contributes.viewsContainers` only accepts `activitybar` and
-  // `panel`, so the container was never created and the twin was silently
-  // dropped into the Explorer — VS Code said as much in its log, at every
-  // window launch. Relocating a view is the workbench's job anyway: the user
-  // drags it wherever they want, next to the chat included, and VS Code
-  // remembers. The title-bar button just opens that native picker.
-  const PANEL_ID = 'claudeLimits.panel';
+  // The context key is phrased POSITIVELY and the default is the secondary side
+  // bar, so its unset state — which is what it is until activation sets it —
+  // already means "next to the chat". Phrased the other way round, every start
+  // would flash the panel on the left before moving it.
+  function inSecondary() { return cfg().location === 'secondarySidebar'; }
+  function activePanelId() {
+    return inSecondary() ? 'claudeMonitorVaultAux.panel' : 'claudeMonitorVault.panel';
+  }
+  function applyLocation() {
+    return vscode.commands.executeCommand('setContext', 'claudeLimits.inSecondary', inSecondary());
+  }
+  applyLocation();
+
+  async function moveTo(loc) {
+    try {
+      await vscode.workspace.getConfiguration('claudeLimits')
+        .update('location', loc, vscode.ConfigurationTarget.Global);
+      cfgCache = null;
+      await applyLocation();
+      vscode.commands.executeCommand(activePanelId() + '.focus');
+    } catch (e) { /* the location is a preference: never break on it */ }
+  }
 
   // Alignment is fixed at creation, so a change of side means rebuilding the
   // item. buildStatus is idempotent: it only recreates when the side actually
@@ -674,18 +690,13 @@ function activate(context) {
     }
     if (webviewView) {
       webviewView.description = head;
-      // Never on the webview. In the primary side bar the panel and the gauge
-      // share the claudeRateLimit container, and VS Code SUMS the numeric
-      // badges of a container's views: carrying it on both showed 90 for 45 %.
-      webviewView.badge = undefined;
+      // The badge stays a LEFT-side signal: on the right the panel is already
+      // in plain sight, and the placeholder below is what keeps the activity-bar
+      // icon alive. Carrying it on both would make VS Code sum the two.
+      webviewView.badge = inSecondary() ? undefined : badge;
     }
-    // The gauge is the sole carrier, in every location: its badge exists from
-    // view creation, unlike a webview's which only exists once opened. Its
-    // description is what makes it readable while collapsed — the whole point
-    // of a one-line summary that costs no screen space.
     gaugeView.description = head;
-    gaugeView.badge = badge;
-    gaugeEmitter.fire(undefined);
+    gaugeView.badge = inSecondary() ? badge : undefined;
   }
 
   // The three styles, within what the status bar API allows. "classic" is the
@@ -890,15 +901,18 @@ function activate(context) {
       schedule();
     }),
     vscode.commands.registerCommand('claudeLimits.open', () =>
-      vscode.commands.executeCommand(PANEL_ID + '.focus')),
+      vscode.commands.executeCommand(activePanelId() + '.focus')),
     // Relocation, handed to the workbench. It offers every destination VS Code
     // actually supports — including the secondary side bar, next to the chat —
     // and it remembers the choice. An extension cannot declare a container
     // there, which is exactly what used to make this button lie.
-    vscode.commands.registerCommand('claudeLimits.moveView', async () => {
-      await vscode.commands.executeCommand(PANEL_ID + '.focus');
-      return vscode.commands.executeCommand('workbench.action.moveFocusedView');
-    }),
+    //
+    // The mirror buttons: same panel, other side. Both destinations are real
+    // containers now, so this is a genuine move and not an illusion.
+    vscode.commands.registerCommand('claudeLimits.moveToSecondary', () =>
+      moveTo('secondarySidebar')),
+    vscode.commands.registerCommand('claudeLimits.moveToPrimary', () =>
+      moveTo('sidebar')),
     // Called by the settings window after a language change. The webview holds
     // a dictionary baked into its HTML, so it is rebuilt rather than nudged;
     // the row labels come back translated on the next render.
@@ -915,12 +929,13 @@ function activate(context) {
       render(true);
     }),
     vscode.commands.registerCommand('claudeVault.show', () =>
-      vscode.commands.executeCommand(PANEL_ID + '.focus')),
+      vscode.commands.executeCommand(activePanelId() + '.focus')),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (!e.affectsConfiguration('claudeLimits')) return;
       cfgCache = null;
       buildStatus();               // rebuild only if the side changed
       applyStatusVisibility();
+      applyLocation();             // relocate the panel if the side setting changed
       render(true);
       schedule();
     }),

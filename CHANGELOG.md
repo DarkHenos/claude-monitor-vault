@@ -8,34 +8,29 @@ All notable changes to **Claude Monitor & Vault**.
 extension showed a bare two-line list, without progress bars and without the
 vault, and nothing explained why.
 
-- The panel now lives in the **left side bar by default**. It used to default to
-  the secondary side bar, which on a fresh profile is closed — or busy with the
-  chat. The only entry point a newcomer could see, the activity-bar icon on the
-  left, therefore led to the lightweight stand-in rather than to the panel. The
-  vault is drawn inside the panel, so it was missing along with it. Moving the
-  panel to the right is still one click away, and the choice is remembered.
-- The stand-in is no longer named “Claude Monitor”, like the panel it replaces
-  and next to which it could appear. It is now **“Limits”**, collapsed by
-  default, and it carries `4% 5h · 11% week` in its own title row — the summary
-  0.58.0 had dropped. Collapsed it costs no room, and it stays the holder of the
-  numeric badge, so the figure is on the icon from startup without waiting for
-  the panel to be opened.
-- The “move to the left side bar” button no longer shows on the stand-in when
-  the panel is already there.
-- README brought back in line: it still described the old default and promised a
+The cause turned out to be a single capital letter. The container was declared
+under **`secondarySideBar`**, the name of the proposed API — while the
+contribution point, finalised in VS Code 1.106, is **`secondarySidebar`**, with
+a lowercase b. Absent from the schema, the key was ignored in silence, the
+container was never created, and VS Code dropped the panel into the **Explorer**
+while saying so in its log at every single window launch. Since the panel
+defaulted to that phantom home, the one entry point a newcomer could see — the
+activity-bar icon on the left — led to a bare list instead. The vault is drawn
+inside the panel, so it went missing along with it.
+
+- **The mirror button finally moves the panel.** Both containers are real now,
+  so the panel genuinely lives next to the chat by default and switches sides in
+  one click. Whichever side is unused has no visible view at all, which is what
+  makes VS Code hide its icon — nothing is duplicated, and nothing has to force
+  it.
+- **The left icon and its counter survive the move.** VS Code hides a container
+  as soon as every one of its views is switched off, and a badge belongs to a
+  view, so something has to stay on the left. That something now lists nothing:
+  a single collapsed line, the summary in its title, the badge on the icon, and
+  — unfolded — a sentence saying where the panel went with a link to bring it
+  back. Repeating the panel's own figures underneath it was the duplicate.
+- README brought back in line: it described the old default and promised a
   click-to-recall gesture that 0.58.0 had removed.
-
-### The panel had a home that did not exist
-
-- **The secondary side bar container was never real.** An extension cannot
-  declare one there — `contributes.viewsContainers` only accepts `activitybar`
-  and `panel` — so VS Code dropped the second panel into the **Explorer** and
-  said so in its log at every window launch. Sending the panel “next to the
-  chat” therefore sent it somewhere else entirely. There is now a single panel,
-  in one real container, and the title-bar button hands relocation to VS Code's
-  own picker: the secondary side bar, the bottom panel, wherever you want, and
-  the workbench remembers it. Dragging the view by hand does the same. The
-  `claudeLimits.location` setting is gone with the mechanism it drove.
 
 ### Vault: nothing can be lost any more
 
@@ -80,13 +75,6 @@ vault, and nothing explained why.
   **`claudeLimits.autoConnect`** setting turns it off. Off, nothing of Claude
   Code is touched until you press Connect — and you press it at every start.
   The setting gates both writes, the hooks and the MCP wrapping.
-
-### Runs on far more installations
-
-- **The minimum VS Code version drops from 1.106 to 1.75.** Nothing in the
-  extension needed a 2025 build: the most demanding APIs are the view badge
-  (1.72) and `vscode.l10n` (1.73). Roughly three years of releases were being
-  excluded for no reason.
 
 ### Also in this release
 
