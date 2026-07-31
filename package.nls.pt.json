@@ -38,5 +38,16 @@
   "cfg.location": "Onde vive o painel: a barra lateral secundária à direita, ao lado do chat, ou a barra de atividades à esquerda. O botão espelho da barra de título também troca de lado.",
   "cmd.moveToSecondary": "Mover para junto do chat",
   "cmd.moveToPrimary": "Voltar à barra lateral esquerda",
-  "welcome.movedRight": "O painel está ao lado do chat.\n[Trazê-lo de volta para a esquerda](command:claudeLimits.moveToPrimary)"
+  "welcome.movedRight": "O painel está ao lado do chat.\n[Trazê-lo de volta para a esquerda](command:claudeLimits.moveToPrimary)",
+  "cmd.vault.rename": "Renomear uma chave",
+  "cmd.vault.replace": "Substituir o valor de uma chave",
+  "cmd.vault.recovery": "Criar a chave de salvaguarda",
+  "cmd.vault.recoveryRestore": "Recuperar com uma frase",
+  "cmd.vault.trash": "Abrir o lixo",
+  "cmd.vault.export": "Criar o ficheiro de exportação",
+  "cmd.vault.import": "Restaurar a partir de um ficheiro",
+  "cmd.vault.togglePublic": "Pública ou secreta",
+  "cmd.vault.terminal": "Abrir um terminal do cofre",
+  "cmd.vault.checkCommit": "Verificar o que está preparado para o commit",
+  "cmd.vault.toggleConfirm": "Perguntar antes de cada utilização"
 }

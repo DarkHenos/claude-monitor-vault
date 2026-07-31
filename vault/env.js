@@ -65,7 +65,10 @@ for (const name of Object.keys(env)) {
   for (const f of found) {
     let value;
     try {
-      const r = vault.consume(f.key, 'mcp-env:' + name);
+      // Who is asking, for the log. Defaults to the MCP case this file was
+      // written for; the vault terminal sets it to say so instead.
+      const who = (process.env.CLAUDE_VAULT_WHO || 'mcp-env') + ':' + name;
+      const r = vault.consume(f.key, who);
       // A server expecting a path wants a file, not the contents of one.
       value = f.file ? vault.materialize(f.key, r.value) : r.value;
     } catch (e) {

@@ -59,13 +59,28 @@ function ttlChoices() {
 }
 
 function activateVault(context, version, onChange) {
-  const sessionKeys = new Set();     // keys to purge when VS Code closes
+  // name -> id of the entry that name pointed at when it was marked. Holding
+  // names alone was a way to lose data: nothing removed a name from the set when
+  // its key vanished outside the UI (expiry, a hook burning it, a deletion from
+  // the palette). Create a NEW key under that same name later, and closing VS
+  // Code deleted it — silently, inside a catch that swallows everything. The id
+  // is what makes "the key I marked" different from "a key called that".
+  const sessionKeys = new Map();
   const notify = () => { try { onChange(); } catch (e) { /* no webview */ } };
 
   // A command can be invoked in three ways: from the palette (no argument),
   // from the webview (the name as a string), or from the native context menu
   // (VS Code passes the data-vscode-context object). The shape of that last
   // one isn't documented, so we accept anything that looks like a key name.
+  // list() rather than listFast(): the id is only exposed by the authenticated
+  // read. Called when a key is marked for the session, which is rare.
+  function idOf(name) {
+    try {
+      const s = (vault.list().secrets || []).find(x => x.name === name);
+      return s ? s.id : null;
+    } catch (e) { return null; }
+  }
+
   function nameOf(arg) {
     if (typeof arg === 'string') return arg;
     if (arg && typeof arg === 'object') {
@@ -82,7 +97,8 @@ function activateVault(context, version, onChange) {
       secrets: vault.listFast().map(s => Object.assign({}, s, { kind: kindText(s.kind) })),
       issues: issuesText(health.issues),
       connected: st.installed && st.upToDate,
-      needsUpdate: st.installed && !st.upToDate
+      needsUpdate: st.installed && !st.upToDate,
+      recovery: vault.recoveryStatus().enabled
     };
   }
 
@@ -352,6 +368,9 @@ function activateVault(context, version, onChange) {
     const choice = await vscode.window.showQuickPick([
       { label: '$(copy) ' + t('Copy marker'), description: marker, act: 'copy' },
       { label: '$(info) ' + t('Details'), description: s.note || t('no description'), act: 'info' },
+      { label: '$(edit) ' + t('Rename'), description: s.name, act: 'rename' },
+      { label: '$(key) ' + t('Replace the value'),
+        description: t('the current one is never shown'), act: 'replace' },
       { label: '$(server) ' + t('Use in an MCP server'), description: t('launcher configuration'), act: 'mcp' },
       { label: '$(clock) ' + t('Change expiry'), description: s.maxUses
           ? t('counted uses') : (s.expiresAt ? t('scheduled') : t('none')), act: 'ttl' },
@@ -368,6 +387,8 @@ function activateVault(context, version, onChange) {
     if (!choice) return;
     if (choice.act === 'copy') return copyMarker(name);
     if (choice.act === 'info') return showDetails(name);
+    if (choice.act === 'rename') return renameKey(name);
+    if (choice.act === 'replace') return replaceKey(name);
     if (choice.act === 'mcp') return mcpSnippet(name);
     if (choice.act === 'ttl') return changeTtl(name);
     if (choice.act === 'mcptoggle') return toggleMcp(name);
@@ -393,13 +414,78 @@ function activateVault(context, version, onChange) {
     const del = t('Delete');
     const yes = await vscode.window.showWarningMessage(
       t('Delete {0}?', name),
-      { modal: true, detail: t('The value cannot be recovered. No copy of it is kept.') },
+      { modal: true,
+        detail: t('It leaves the vault and waits {0} days in the bin, still encrypted. Claude cannot use it in the meantime. After that it is gone for good.',
+          String(vault.TRASH_DAYS)) },
       del);
     if (yes !== del) return;
     try {
       vault.remove(name);
       sessionKeys.delete(name);
       notify();
+      const undo = t('Undo');
+      vscode.window.showInformationMessage(t('{0} moved to the bin.', name), undo)
+        .then(a => { if (a === undo) restoreFromBin(name); });
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  // ------------------------------------------------------------------- the bin
+
+  function restoreFromBin(name) {
+    const it = vault.listTrash().find(x => x.name === name);
+    if (!it) return;
+    try {
+      vault.restoreTrashed(it.id);
+      notify();
+      vscode.window.setStatusBarMessage(t('{0} is back in the vault', name), 4000);
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  function daysLeft(ms) {
+    const d = Math.ceil(ms / 86400000);
+    return d <= 1 ? t('gone tomorrow') : t('{0} days left', String(d));
+  }
+
+  async function showTrash() {
+    let items;
+    try { items = vault.listTrash(); }
+    catch (e) { return vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+    if (!items.length) {
+      return vscode.window.showInformationMessage(
+        t('The bin is empty. A deleted key waits {0} days here.', String(vault.TRASH_DAYS)));
+    }
+    const pick = await vscode.window.showQuickPick(
+      items.map(i => ({
+        label: '$(trash) ' + i.name,
+        description: daysLeft(i.expiresIn),
+        detail: t('deleted {0}', new Date(i.deletedAt).toLocaleString(vscode.env.language || undefined,
+          { dateStyle: 'short', timeStyle: 'short' })),
+        id: i.id, name: i.name
+      })),
+      { title: t('Bin'), placeHolder: t('Pick a key to put back in the vault.') });
+    if (!pick) return;
+    try {
+      vault.restoreTrashed(pick.id);
+      notify();
+      vscode.window.showInformationMessage(t('{0} is back in the vault', pick.name));
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  async function emptyTrashFlow() {
+    const n = vault.listTrash().length;
+    if (!n) return vscode.window.showInformationMessage(t('The bin is already empty.'));
+    const go = t('Empty the bin');
+    const yes = await vscode.window.showWarningMessage(
+      t('Empty the bin?'),
+      { modal: true,
+        detail: t('{0} key(s) are destroyed immediately instead of waiting out their {1} days.',
+          String(n), String(vault.TRASH_DAYS)) },
+      go);
+    if (yes !== go) return;
+    try {
+      vault.emptyTrash();
+      notify();
+      vscode.window.setStatusBarMessage(t('Bin emptied'), 4000);
     } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
   }
 
@@ -412,8 +498,67 @@ function activateVault(context, version, onChange) {
     if (!ttl) return;
     try {
       vault.setTtl(name, ttl.ms ? Date.now() + ttl.ms : null, ttl.maxUses || null);
-      if (ttl.session) sessionKeys.add(name); else sessionKeys.delete(name);
+      if (ttl.session) sessionKeys.set(name, idOf(name)); else sessionKeys.delete(name);
       notify();
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  // Rotating a key: the same box as a creation, masked, and the current value is
+  // never shown — there is no path in this extension that would display it here.
+  // Everything else the key carries is kept: expiry, use cap, MCP authorisation,
+  // description. Only the secret changes.
+  async function replaceKey(arg) {
+    const name = nameOf(arg) || await pickKey(t('Replace the value'));
+    if (!name) return;
+    const s = vault.listFast().find(x => x.name === name);
+    const value = await vscode.window.showInputBox({
+      title: t('New value for {0}', name),
+      prompt: t('The current value is never shown. Paste the new one; the old is overwritten for good.'),
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: v => (v && v.length ? null : t('Paste the key value.'))
+    });
+    if (!value) return;
+    try {
+      vault.replaceValue(name, value);
+      notify();
+      vscode.window.showInformationMessage(
+        s && (s.expiresAt || s.maxUses || s.mcp)
+          ? t('{0} holds a new value. Its expiry, limits and authorisations are unchanged.', name)
+          : t('{0} holds a new value.', name));
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  // The value never moves: only the label on it. What the box shows live is the
+  // normalised form, because that is what will actually be stored — typing
+  // "clé api" and getting CLE_API without warning would be a surprise.
+  async function renameKey(arg) {
+    const name = nameOf(arg) || await pickKey(t('Rename a key'));
+    if (!name) return;
+    const taken = vault.listFast().map(s => s.name).filter(n => n !== name);
+    const next = await vscode.window.showInputBox({
+      title: t('Rename {0}', name),
+      value: name,
+      prompt: t('Spaces and accents are accepted: they become underscores and plain letters.'),
+      validateInput: raw => {
+        const n = vault.normalizeName(raw);
+        if (!n) return t('A name is required.');
+        if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(n)) return t('It must start with a letter, 2 to 64 characters.');
+        if (taken.indexOf(n) !== -1) return t('{0} already exists.', n);
+        return n === raw ? null : { message: t('Will be stored as {0}', n), severity: 1 };
+      }
+    });
+    if (!next) return;
+    try {
+      const r = vault.rename(name, next);
+      if (r.unchanged) return;
+      // A renamed key is the same key: the mark follows the label, or a session
+      // key would quietly outlive the session that created it.
+      if (sessionKeys.has(r.from)) sessionKeys.set(r.name, sessionKeys.get(r.from));
+      sessionKeys.delete(r.from);
+      notify();
+      vscode.window.showInformationMessage(
+        t('{0} is now {1}. Update any marker that still points at the old name.', r.from, r.name));
     } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
   }
 
@@ -461,6 +606,62 @@ function activateVault(context, version, onChange) {
   // protection. In a shell, the value only ever exists in the memory of the
   // spawned process; in an MCP call, it is placed in the tool's arguments
   // and sent off to the MCP server's provider.
+  // Marking a key public is the one direction that can bite: it takes the key
+  // out of the commit guard's sight. So going that way asks, coming back does not.
+  async function togglePublic(arg) {
+    const name = nameOf(arg) || await pickKey(t('Public or secret'));
+    if (!name) return;
+    const s = vault.listFast().find(x => x.name === name);
+    if (!s) return;
+    if (s.pub) {
+      try {
+        vault.setPublic(name, false);
+        notify();
+        vscode.window.setStatusBarMessage(t('{0} is treated as a secret again', name), 4000);
+      } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+      return;
+    }
+    const go = t('Mark as public');
+    const yes = await vscode.window.showWarningMessage(
+      t('Is {0} a publishable value?', name),
+      { modal: true,
+        detail: t('Say yes only for the half a service publishes on purpose: a Stripe pk_, a Supabase anon key, a captcha sitekey. A public value stops being watched, and will no longer be flagged when it appears in a file or in a commit.') },
+      go);
+    if (yes !== go) return;
+    try {
+      vault.setPublic(name, true);
+      notify();
+      vscode.window.setStatusBarMessage(t('{0} is marked public', name), 4000);
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  // A grant used to be all-or-nothing: a key needed by one server was reachable
+  // by every wrapped server. Returns [] for "all of them", a list to restrict,
+  // or undefined if the user backed out.
+  async function pickMcpScope(s) {
+    let names = [];
+    try { names = installer.serverNames(); } catch (e) { /* no config yet */ }
+    if (!names.length) return [];                    // nothing to choose between
+    const all = t('Every MCP server');
+    const some = t('Only certain servers…');
+    const choice = await vscode.window.showQuickPick(
+      [{ label: '$(globe) ' + all, description: t('simplest, and the widest'), all: true },
+       { label: '$(list-selection) ' + some,
+         description: t('{0} server(s) configured', String(names.length)), all: false }],
+      { title: t('Where may {0} be used?', s.name) });
+    if (!choice) return undefined;
+    if (choice.all) return [];
+    const picked = await vscode.window.showQuickPick(
+      names.map(n => ({ label: n, picked: !!(s.mcpServers && s.mcpServers.indexOf(n) !== -1) })),
+      { title: t('Servers allowed for {0}', s.name), canPickMany: true,
+        placeHolder: t('The key is refused everywhere else.') });
+    if (!picked) return undefined;
+    // An empty selection would mean "all servers" once stored, which is the
+    // opposite of what someone who opened this list is asking for.
+    if (!picked.length) return undefined;
+    return picked.map(p => p.label);
+  }
+
   async function toggleMcp(arg) {
     const name = nameOf(arg) || await pickKey(t('Allow a key for MCP tools'));
     if (!name) return;
@@ -485,7 +686,9 @@ function activateVault(context, version, onChange) {
       },
       allow);
     if (yes !== allow) return;
-    vault.setMcp(name, true);
+    const scope = await pickMcpScope(s);
+    if (scope === undefined) return;                 // dismissed: grant nothing
+    vault.setMcp(name, true, scope);
     // Make sure the local MCP servers are wrapped, so the grant takes effect
     // with no manual configuration. Idempotent, writes only if something changed.
     try { installer.wrapMcpServers(); } catch (e) { /* the manual snippet remains */ }
@@ -603,6 +806,17 @@ function activateVault(context, version, onChange) {
       if (m.type === 'audit') showAudit();
       if (m.type === 'revoke') revokeAll();
       if (m.type === 'langue') setLang(m.value);
+      // Redraw after each one: the section shows the state, and the Turn-off
+      // button only exists while a phrase does.
+      const redraw = () => { if (settingsPanel) settingsPanel.webview.html = settingsHtml(); };
+      if (m.type === 'binShow') showTrash().then(redraw);
+      if (m.type === 'binEmpty') emptyTrashFlow().then(redraw);
+      if (m.type === 'expNew') exportChoose().then(redraw);
+      if (m.type === 'expOff') exportStop().then(redraw);
+      if (m.type === 'expImp') exportImportFlow().then(redraw);
+      if (m.type === 'recNew') recoveryCreate().then(redraw);
+      if (m.type === 'recUse') recoveryRestoreFlow().then(redraw);
+      if (m.type === 'recOff') recoveryOff().then(redraw);
     });
     settingsPanel.onDidDispose(() => { settingsPanel = null; });
     context.subscriptions.push(settingsPanel);
@@ -611,6 +825,11 @@ function activateVault(context, version, onChange) {
   function settingsHtml() {
     const d = getDefaults();
     const st = installer.status(version);
+    const rec = vault.recoveryStatus();
+    let exp = { path: null, at: null, present: false, at_file: null };
+    try { exp = vault.exportStatus(); } catch (e) { /* no policy file yet */ }
+    let binned = [];
+    try { binned = vault.listTrash(); } catch (e) { /* unreadable bin */ }
     const h = vault.healthCheck();
     const nonce = require('crypto').randomBytes(16).toString('base64');
     const cl = vscode.workspace.getConfiguration('claudeLimits');
@@ -670,6 +889,11 @@ function activateVault(context, version, onChange) {
   .etat.ko { border-left-color: var(--vscode-charts-yellow);
              background: color-mix(in srgb, var(--vscode-charts-yellow) 9%, transparent); }
   .actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+  /* A path is read character by character when something goes wrong, so it gets
+     the editor font and room to wrap rather than an ellipsis. */
+  .chemin { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px;
+            opacity: .65; margin: -6px 0 10px; word-break: break-all; }
+  .actions button[disabled] { opacity: .4; cursor: not-allowed; }
 </style></head><body>
 <div class="wrap">
 <h1>${esc(t('Claude Monitor'))}</h1>
@@ -763,6 +987,56 @@ function activateVault(context, version, onChange) {
 </div>
 
 <div class="sect">
+<h2>${esc(t('Bin'))}</h2>
+<div class="etat${binned.length ? '' : ' ko'}">
+  ${esc(binned.length
+    ? t('{0} key(s) waiting, oldest {1}', String(binned.length),
+        daysLeft(Math.min.apply(null, binned.map(i => i.expiresIn))))
+    : t('The bin is empty. A deleted key waits {0} days here.', String(vault.TRASH_DAYS)))}
+</div>
+<div class="desc">${esc(t('A deleted key stays encrypted here and Claude cannot use it. Put it back, or destroy it now.'))}</div>
+<div class="actions">
+  <button class="doux" id="binshow">${esc(t('Open the bin'))}</button>
+  <button class="doux" id="binempty">${esc(t('Empty the bin'))}</button>
+</div>
+</div>
+
+<div class="sect">
+<h2>${esc(t('Export file'))}</h2>
+<div class="etat${exp.path ? '' : ' ko'}">
+  ${esc(!rec.enabled
+    ? t('Create your recovery phrase first: it is what opens the export file.')
+    : (exp.path
+        ? (exp.present
+            ? t('Up to date, {0}', whenText(exp.at || exp.at_file))
+            : t('File not found where it was left: it stopped being updated.'))
+        : t('No export file yet.')))}
+</div>
+${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
+<div class="desc">${esc(t('One encrypted file holding your whole vault, refreshed on its own at every change. Keep it somewhere other than this machine: a disk that dies takes the vault and everything beside it. Your recovery phrase opens it on any machine, which is all it takes to move to a new computer.'))}</div>
+<div class="actions">
+  <button class="doux" id="expnew"${rec.enabled ? '' : ' disabled'}>${esc(exp.path ? t('Change location') : t('Create the export file'))}</button>
+  ${exp.path ? '<button class="doux" id="expoff">' + esc(t('Stop updating')) + '</button>' : ''}
+  <button class="doux" id="expimp">${esc(t('Restore from a file'))}</button>
+</div>
+</div>
+
+<div class="sect">
+<h2>${esc(t('Recovery phrase'))}</h2>
+<div class="etat${rec.enabled ? '' : ' ko'}">
+  ${esc(rec.enabled
+    ? t('Active. The phrase reopens this vault if the master key is lost.')
+    : t('Not set up. If the master key is lost, no key can be recovered.'))}
+</div>
+<div class="desc">${esc(t('A list of words, shown once, that unlocks a copy of the master key. It is not stored: keep it offline, away from this machine.'))}</div>
+<div class="actions">
+  <button class="doux" id="recnew">${esc(rec.enabled ? t('Replace the phrase') : t('Create the backup key'))}</button>
+  <button class="doux" id="recuse">${esc(t('Recover with a phrase'))}</button>
+  ${rec.enabled ? '<button class="doux" id="recoff">' + esc(t('Turn it off')) + '</button>' : ''}
+</div>
+</div>
+
+<div class="sect">
 <h2>${esc(t('Connection to Claude Code'))}</h2>
 <div class="etat${st.installed && st.upToDate ? '' : ' ko'}">
   ${esc(st.installed && st.upToDate
@@ -812,6 +1086,14 @@ ${issuesText(h.issues).map(i => '<div class="etat ko">' + esc(i.msg) + '</div>')
   $('pont').addEventListener('click', function () { api.postMessage({ type: 'connect' }); });
   $('jour').addEventListener('click', function () { api.postMessage({ type: 'audit' }); });
   $('rev').addEventListener('click', function () { api.postMessage({ type: 'revoke' }); });
+  $('binshow').addEventListener('click', function () { api.postMessage({ type: 'binShow' }); });
+  $('binempty').addEventListener('click', function () { api.postMessage({ type: 'binEmpty' }); });
+  $('expnew').addEventListener('click', function () { api.postMessage({ type: 'expNew' }); });
+  $('expimp').addEventListener('click', function () { api.postMessage({ type: 'expImp' }); });
+  if ($('expoff')) $('expoff').addEventListener('click', function () { api.postMessage({ type: 'expOff' }); });
+  $('recnew').addEventListener('click', function () { api.postMessage({ type: 'recNew' }); });
+  $('recuse').addEventListener('click', function () { api.postMessage({ type: 'recUse' }); });
+  if ($('recoff')) $('recoff').addEventListener('click', function () { api.postMessage({ type: 'recOff' }); });
 })();
 </script></body></html>`;
   }
@@ -976,11 +1258,438 @@ ${entries.length
       revoke);
     if (yes !== revoke) return;
     try {
-      const n = vault.revokeAll();
+      const n = vault.revokeAll('REVOKE');
       sessionKeys.clear();
       notify();
       vscode.window.showWarningMessage(
         t('{0} key(s) revoked. The vault starts empty again.', String(n)));
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  // ------------------------------------------------------- recovery phrase
+  //
+  // The master key lives in the OS secret store, and that store can be lost:
+  // a wiped profile, a reinstalled OS, a Windows account rebuilt after a
+  // failure. The phrase is the second door. It is shown ONCE — only the
+  // envelope it opens is written to disk — so everything here is built around
+  // that single showing: copy it, save it, then confirm.
+
+  // Plain words on one line. Numbering them read as tidier, and it was worse:
+  // what people actually do is select and copy, and numbers come along for the
+  // ride and have to be picked back out one by one.
+  function phraseText(words) {
+    return words.join(' ');
+  }
+
+  function phraseFileBody(words) {
+    return [
+      t('Claude Vault : recovery phrase'),
+      '',
+      t('These {0} words reopen your vault if the master key is lost.', String(words.length)),
+      t('Keep this file offline. Anyone holding these words can open the vault.'),
+      '',
+      words.join(' '),
+      ''
+    ].join('\n');
+  }
+
+  async function savePhraseFile(words) {
+    const os = require('os');
+    const target = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(path.join(os.homedir(), 'claude-vault-recovery.txt')),
+      filters: { 'Text': ['txt'] },
+      saveLabel: t('Save the phrase')
+    });
+    if (!target) return false;
+    // 0600: on a shared machine the file would otherwise be world-readable.
+    fs.writeFileSync(target.fsPath, phraseFileBody(words), { encoding: 'utf8', mode: 0o600 });
+    vscode.window.showInformationMessage(
+      t('Phrase saved to {0}. Move it off this machine: a copy sitting next to the vault protects nothing.',
+        target.fsPath));
+    return true;
+  }
+
+  // Kept open until the user confirms, so saving AND copying is possible.
+  async function showPhrase(words) {
+    const save = t('Save as .txt');
+    const copy = t('Copy');
+    const done = t('I have written them down');
+    for (;;) {
+      const answer = await vscode.window.showInformationMessage(
+        t('Your recovery phrase'),
+        {
+          modal: true,
+          detail: phraseText(words) + '\n\n' +
+            t('Shown once, and stored nowhere: neither you nor this extension can display it again. Anyone holding these words can open the vault.')
+        },
+        save, copy, done);
+      if (answer === save) { await savePhraseFile(words); continue; }
+      if (answer === copy) {
+        await vscode.env.clipboard.writeText(words.join(' '));
+        vscode.window.setStatusBarMessage(t('Phrase copied to the clipboard'), 4000);
+        continue;
+      }
+      return;                                   // "written down", or dismissed
+    }
+  }
+
+  async function recoveryCreate() {
+    try {
+      if (vault.recoveryStatus().enabled) {
+        const go = t('Replace the phrase');
+        const yes = await vscode.window.showWarningMessage(
+          t('A recovery phrase already exists.'),
+          { modal: true,
+            detail: t('Creating a new one makes the previous phrase useless. Any copy you kept of it stops working.') },
+          go);
+        if (yes !== go) return;
+      }
+      const words = vault.recoveryEnable();
+      await showPhrase(words);
+      words.fill('');
+      notify();
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  async function recoveryRestoreFlow() {
+    const phrase = await vscode.window.showInputBox({
+      title: t('Recover with a phrase'),
+      prompt: t('Type or paste the words, separated by spaces. Case and punctuation do not matter.'),
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: v => {
+        const n = String(v || '').trim().split(/[^A-Za-z]+/).filter(Boolean).length;
+        if (!n) return t('Enter your recovery phrase.');
+        return null;
+      }
+    });
+    if (!phrase) return;
+    try {
+      const r = vault.recoveryRestore(phrase);
+      notify();
+      vscode.window.showInformationMessage(
+        t('Vault reopened: {0} key(s) are readable again. The master key is back in this machine’s secret store.',
+          String(r.secrets)));
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  async function recoveryOff() {
+    const off = t('Turn it off');
+    const yes = await vscode.window.showWarningMessage(
+      t('Turn off the recovery phrase?'),
+      { modal: true,
+        detail: t('The phrase stops opening this vault. If the master key is lost afterwards, nothing will bring the keys back.') },
+      off);
+    if (yes !== off) return;
+    try {
+      vault.recoveryDisable();
+      notify();
+      vscode.window.setStatusBarMessage(t('Recovery phrase turned off'), 4000);
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  // -------------------------------------------------- markers in the editor
+  //
+  // Typing {{vault: anywhere offers the key names. Nothing secret is exposed:
+  // the names are already public, and it is the marker — inert on its own —
+  // that gets inserted. What it removes is the round trip to the panel to
+  // check whether the key was MAILJET_CLE_API or MAILJET_API_CLE.
+
+  function markerProvider() {
+    return {
+      provideCompletionItems(doc, pos) {
+        const before = doc.lineAt(pos).text.slice(0, pos.character);
+        // Matches the marker being typed, whether or not the prefix is complete:
+        // "{{", "{{va", "{{vault:", "{{vault-file:MAI".
+        const m = /\{\{([A-Za-z-]*)(?::([A-Za-z0-9_]*))?$/.exec(before);
+        if (!m) return undefined;
+        const typedPrefix = m[1] || '';
+        if (typedPrefix && !'vault-file'.startsWith(typedPrefix)) return undefined;
+
+        let keys;
+        try { keys = vault.listFast(); } catch (e) { return undefined; }
+        const start = pos.translate(0, -m[0].length);
+        const range = new vscode.Range(start, pos);
+        // The closing braces may already be there if the editor auto-paired them.
+        const after = doc.lineAt(pos).text.slice(pos.character);
+        const close = after.startsWith('}}') ? '' : '}}';
+
+        return keys.map(s => {
+          const marker = '{{vault' + (s.isFile ? '-file' : '') + ':' + s.name + close;
+          const it = new vscode.CompletionItem(s.name, vscode.CompletionItemKind.Constant);
+          it.insertText = marker;
+          it.range = range;
+          it.filterText = '{{' + s.name;      // so typing "{{MAIL" still matches
+          it.detail = kindText(s.kind) + (s.mcp ? '  ·  MCP' : '');
+          it.documentation = new vscode.MarkdownString(
+            t('The value is substituted just before the command runs, out of Claude’s view.'));
+          return it;
+        });
+      }
+    };
+  }
+
+  // ------------------------------------------------- confirmation on every use
+  //
+  // The hook is blocked on a file, counting down. Whatever happens here, it must
+  // get an answer: closing the dialog is a refusal, not a shrug.
+
+  const asking = new Set();          // one dialog per request, however often we poll
+
+  async function reviewUses() {
+    let waiting;
+    try { waiting = vault.pendingUses(); } catch (e) { return; }
+    for (const p of waiting) {
+      if (asking.has(p.id)) continue;
+      asking.add(p.id);
+      const allow = t('Allow this use');
+      const answer = await vscode.window.showWarningMessage(
+        t('Claude wants to use {0}.', p.name),
+        { modal: true,
+          detail: (p.who ? t('Asked by: {0}.', p.who) + '\n\n' : '') +
+            t('You asked to be consulted every time this key is used. Refusing stops the command that needed it; nothing is destroyed.') },
+        allow);
+      try { vault.answerUse(p.id, answer === allow); } catch (e) { /* it timed out */ }
+      asking.delete(p.id);
+      notify();
+    }
+  }
+
+  async function toggleConfirm(arg) {
+    const name = nameOf(arg) || await pickKey(t('Ask before every use'));
+    if (!name) return;
+    const s = vault.listFast().find(x => x.name === name);
+    if (!s) return;
+    if (s.confirm) {
+      try {
+        vault.setConfirm(name, false);
+        notify();
+        vscode.window.setStatusBarMessage(t('{0} no longer asks before each use', name), 4000);
+      } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+      return;
+    }
+    const go = t('Ask every time');
+    const yes = await vscode.window.showWarningMessage(
+      t('Be asked before every use of {0}?', name),
+      { modal: true,
+        detail: t('Each time Claude needs this key, a dialog appears here and the command waits for it. With no answer within a minute, the use is refused. Meant for the few keys where an unattended use would be expensive.') },
+      go);
+    if (yes !== go) return;
+    try {
+      vault.setConfirm(name, true);
+      notify();
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  // ----------------------------------------------------------- the commit guard
+  //
+  // Two moments, one question. When a file is saved, and when something is
+  // staged for commit: is one of your own secrets in there, in clear?
+  //
+  // It warns, it never blocks. Blocking would mean a git hook, and a git hook
+  // is triggered by the repository rather than by the user, which turns the
+  // guard into something any project you clone can ask questions of.
+
+  const warned = new Set();          // one warning per key per session, per place
+
+  function guardWarn(names, where, place) {
+    const fresh = names.filter(n => !warned.has(n + '@' + place));
+    if (!fresh.length) return;
+    for (const n of fresh) warned.add(n + '@' + place);
+    const copy = t('Copy marker');
+    vscode.window.showWarningMessage(
+      fresh.length === 1
+        ? t('{0} is written in clear in {1}.', fresh[0], where)
+        : t('{0} keys are written in clear in {1}: {2}',
+            String(fresh.length), where, fresh.join(', ')),
+      copy)
+      .then(a => { if (a === copy) copyMarker(fresh[0]); });
+  }
+
+  function guardDocument(doc) {
+    try {
+      if (!doc || doc.uri.scheme !== 'file') return;
+      // Its own vault files hold sealed values, not clear ones, and scanning
+      // the export would be pointless work on a large encrypted blob.
+      if (doc.uri.fsPath.indexOf(path.join('.claude', 'vault')) !== -1) return;
+      if (doc.getText().length > 2000000) return;
+      const hits = vault.scanText(doc.getText());
+      if (hits.length) guardWarn(hits, path.basename(doc.uri.fsPath), doc.uri.fsPath);
+    } catch (e) { /* the guard must never be the reason a save feels wrong */ }
+  }
+
+  // Only the added lines: a secret being REMOVED from a file is the good news.
+  function stagedAdditions(cwd) {
+    const { spawnSync } = require('child_process');
+    const r = spawnSync('git', ['diff', '--cached', '--no-color', '-U0'],
+      { cwd, encoding: 'utf8', timeout: 8000, windowsHide: true });
+    if (r.error || r.status !== 0 || !r.stdout) return '';
+    return r.stdout.split('\n')
+      .filter(l => l.startsWith('+') && !l.startsWith('+++'))
+      .map(l => l.slice(1))            // the marker is diff syntax, not content
+      .join('\n');
+  }
+
+  function guardStaged(silent) {
+    const folders = vscode.workspace.workspaceFolders || [];
+    let found = 0;
+    for (const f of folders) {
+      let added = '';
+      try { added = stagedAdditions(f.uri.fsPath); } catch (e) { continue; }
+      if (!added) continue;
+      const hits = vault.scanText(added);
+      if (hits.length) {
+        found += hits.length;
+        guardWarn(hits, t('what is staged for commit'), 'staged:' + f.uri.fsPath);
+      }
+    }
+    if (!found && !silent) {
+      vscode.window.showInformationMessage(
+        t('Nothing staged for commit holds one of your keys.'));
+    }
+    return found;
+  }
+
+  // -------------------------------------------------------- the vault terminal
+  //
+  // A terminal whose environment already holds the keys, so a dev server or a
+  // watcher never needs the value written into a command line. The point is not
+  // that Claude cannot see it: it never could, the hook substitutes out of its
+  // view either way. The point is that a value sitting in a command line is
+  // visible in the machine's process list while the command runs, and often in
+  // shell history afterwards. In an environment block it is not.
+  //
+  // The extension host never holds the values. It sets MARKERS in the terminal's
+  // environment and launches env.js, which resolves them and execs the shell.
+  // The same resolution path the MCP servers use, already tested.
+
+  async function openVaultTerminal() {
+    const all = vault.listFast().filter(s => !s.expired);
+    if (!all.length) {
+      return vscode.window.showInformationMessage(t('No keys yet.'));
+    }
+    // A burn-after-use key would be spent by opening the terminal, before it
+    // ever served the purpose it was created for.
+    const usable = all.filter(s => !s.maxUses);
+    const burn = all.length - usable.length;
+    if (!usable.length) {
+      return vscode.window.showWarningMessage(
+        t('Only single-use keys are left: opening a terminal would spend them.'));
+    }
+    const picked = await vscode.window.showQuickPick(
+      usable.map(s => ({ label: s.name, description: kindText(s.kind) + (s.pub ? '  ·  pub' : '') })),
+      { canPickMany: true, title: t('Keys for this terminal'),
+        placeHolder: burn
+          ? t('{0} single-use key(s) are not offered: opening the terminal would spend them.', String(burn))
+          : t('They become environment variables, named after the keys.') });
+    if (!picked || !picked.length) return;
+
+    const env = { CLAUDE_VAULT_WHO: 'terminal' };
+    for (const p of picked) env[p.label] = '{{vault:' + p.label + '}}';
+
+    try {
+      const term = vscode.window.createTerminal({
+        name: 'Claude Vault',
+        shellPath: installer.nodeExec(),
+        shellArgs: [path.join(__dirname, 'env.js'), '--', vscode.env.shell],
+        env,
+        isTransient: true,
+        iconPath: new vscode.ThemeIcon('lock')
+      });
+      term.show();
+      notify();
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  // ----------------------------------------------------------- the export file
+
+  const EXPORT_EXT = 'cvault';
+
+  function whenText(ms) {
+    return new Date(ms).toLocaleString(vscode.env.language || undefined,
+      { dateStyle: 'short', timeStyle: 'short' });
+  }
+
+  async function exportChoose() {
+    if (!vault.recoveryStatus().enabled) {
+      return vscode.window.showWarningMessage(
+        t('Create your recovery phrase first: it is what opens the export file.'));
+    }
+    const os = require('os');
+    const target = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(path.join(os.homedir(), 'claude-vault.' + EXPORT_EXT)),
+      filters: { 'Claude Vault': [EXPORT_EXT] },
+      saveLabel: t('Create the export file')
+    });
+    if (!target) return;
+    try {
+      vault.exportWrite(target.fsPath);
+      notify();
+      vscode.window.showInformationMessage(
+        t('Export created: {0}. It is refreshed on its own at every change. Keep it somewhere other than this machine.',
+          target.fsPath));
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  async function exportStop() {
+    const st = vault.exportStatus();
+    if (!st.path) return;
+    const go = t('Stop updating');
+    const yes = await vscode.window.showWarningMessage(
+      t('Stop keeping the export file up to date?'),
+      { modal: true,
+        detail: t('The file is left where it is and still opens with your phrase, but it stops following the vault: it will hold the keys as they are today, not as they will be.') },
+      go);
+    if (yes !== go) return;
+    vault.exportForget();
+    notify();
+  }
+
+  // The one path that has to work on a machine that has never seen this vault.
+  async function exportImportFlow() {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      filters: { 'Claude Vault': [EXPORT_EXT] },
+      openLabel: t('Open the export file')
+    });
+    if (!picked || !picked.length) return;
+    let text;
+    try { text = fs.readFileSync(picked[0].fsPath, 'utf8'); }
+    catch (e) { return vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+
+    // Look before touching anything: what the file holds, and whether this
+    // machine can already open it.
+    let info;
+    try { info = vault.exportInspect(text); }
+    catch (e) { return vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+
+    const here = vault.listFast().length;
+    const go = t('Restore this vault');
+    const yes = await vscode.window.showWarningMessage(
+      t('Restore {0} key(s) from this file?', String(info.count)),
+      { modal: true,
+        detail: t('Exported {0}. The {1} key(s) currently on this machine are replaced.',
+          whenText(info.at), String(here)) +
+          (info.opensLocally ? '' : '\n\n' + t('This file comes from another machine: its phrase will be asked for.')) },
+      go);
+    if (yes !== go) return;
+
+    let phrase = null;
+    if (!info.opensLocally) {
+      phrase = await vscode.window.showInputBox({
+        title: t('Recovery phrase of this export'),
+        prompt: t('Type or paste the words, separated by spaces. Case and punctuation do not matter.'),
+        password: true, ignoreFocusOut: true,
+        validateInput: v => (String(v || '').trim() ? null : t('Enter your recovery phrase.'))
+      });
+      if (!phrase) return;
+    }
+    try {
+      const r = vault.exportImport(text, phrase);
+      sessionKeys.clear();
+      notify();
+      vscode.window.showInformationMessage(
+        t('Vault restored from the file: {0} key(s).', String(r.secrets)));
     } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
   }
 
@@ -1035,8 +1744,60 @@ ${entries.length
     vscode.commands.registerCommand('claudeVault.details', showDetails),
     vscode.commands.registerCommand('claudeVault.mcpSnippet', mcpSnippet),
     vscode.commands.registerCommand('claudeVault.setNote', editNote),
-    vscode.commands.registerCommand('claudeVault.autoApprove', toggleAutoApprove)
+    vscode.commands.registerCommand('claudeVault.rename', renameKey),
+    vscode.commands.registerCommand('claudeVault.replace', replaceKey),
+    vscode.commands.registerCommand('claudeVault.autoApprove', toggleAutoApprove),
+    vscode.commands.registerCommand('claudeVault.terminal', openVaultTerminal),
+    vscode.commands.registerCommand('claudeVault.checkCommit', () => guardStaged(false)),
+    vscode.commands.registerCommand('claudeVault.export', exportChoose),
+    vscode.commands.registerCommand('claudeVault.import', exportImportFlow),
+    vscode.commands.registerCommand('claudeVault.trash', showTrash),
+    vscode.commands.registerCommand('claudeVault.togglePublic', togglePublic),
+    vscode.commands.registerCommand('claudeVault.toggleConfirm', toggleConfirm),
+    vscode.commands.registerCommand('claudeVault.recovery', recoveryCreate),
+    vscode.commands.registerCommand('claudeVault.recoveryRestore', recoveryRestoreFlow)
   );
+
+  // Registered on its own, and forgivingly: marker completion is a convenience,
+  // and a convenience that fails must not take the vault down with it. Wired
+  // into the same push above, one throw here left the whole extension reporting
+  // "Claude Vault unavailable" — every command gone, for an autocomplete.
+  try {
+    context.subscriptions.push(vscode.languages.registerCompletionItemProvider(
+      [{ scheme: 'file' }, { scheme: 'untitled' }, { scheme: 'vscode-userdata' }],
+      markerProvider(), '{', ':'));
+  } catch (e) { /* no completion API: the panel and the commands still work */ }
+
+  // Same rule as the completion provider, learned the same way: a watcher that
+  // fails to register must not take the vault down with it.
+  try {
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(guardDocument));
+  } catch (e) { /* no save event here: the guard still runs on staging and on demand */ }
+
+  // Staging is the moment a secret stops being a local mistake and becomes one
+  // step away from a remote. Git rewrites .git/index whenever anything is
+  // staged, so that file is the signal, and watching it needs no git extension
+  // API and no hook inside the repository.
+  const gitWatchers = [];
+  let gitTimer = null;
+  for (const f of (vscode.workspace.workspaceFolders || [])) {
+    const idx = path.join(f.uri.fsPath, '.git', 'index');
+    try {
+      if (!fs.existsSync(idx)) continue;
+      gitWatchers.push(fs.watch(idx, () => {
+        // Git writes the index through a temporary file and a rename, so a
+        // single staging produces several events.
+        if (gitTimer) clearTimeout(gitTimer);
+        gitTimer = setTimeout(() => { try { guardStaged(true); } catch (e) { /* not a git repo any more */ } }, 700);
+      }));
+    } catch (e) { /* no repository here, or watching unavailable */ }
+  }
+  context.subscriptions.push({
+    dispose: () => {
+      if (gitTimer) clearTimeout(gitTimer);
+      for (const w of gitWatchers) { try { w.close(); } catch (e) { /* shutting down */ } }
+    }
+  });
 
   // Sweep for expirations. One minute is enough: the webview animates its bars on
   // its own between passes, without asking the extension for anything. The vault
@@ -1046,6 +1807,7 @@ ${entries.length
   let fingerprint = vault.listFast().map(s => s.name + ':' + s.uses).join('|');
   const sweep = setInterval(() => {
     reviewPending();          // safety net if fs.watch is unavailable or died
+    reviewUses();
     const gone = vault.sweep();
     vault.sweepTmp(3600000);
     if (gone.length) {
@@ -1054,6 +1816,13 @@ ${entries.length
     const nowSig = vault.listFast().map(s => s.name + ':' + s.uses).join('|');
     if (nowSig !== fingerprint) { fingerprint = nowSig; notify(); }
   }, 60000);
+
+  // The minute sweep cannot serve a hook that gives up after fifty-five seconds,
+  // and fs.watch is not available everywhere. Two seconds, on a file that is
+  // usually absent: a failed stat, no more.
+  const useWatch = setInterval(() => {
+    try { reviewUses(); } catch (e) { /* nothing waiting */ }
+  }, 2000);
 
   // A key can now appear without the extension doing anything: Claude creates
   // one by piping a value into add.js. Waiting up to a minute for the sweep to
@@ -1070,6 +1839,9 @@ ${entries.length
   };
   try {
     vaultWatcher = fs.watch(vault.VAULT_DIR, (event, fname) => {
+      // A use awaiting confirmation is a hook blocked on a countdown, so that
+      // file has to wake us as surely as the vault itself.
+      if (fname === 'pending-use.json') { reviewUses(); return; }
       if (fname && fname !== path.basename(vault.VAULT_PATH)) return;
       // Debounced: an atomic write is a create then a rename, so two events.
       if (vaultTimer) clearTimeout(vaultTimer);
@@ -1084,9 +1856,18 @@ ${entries.length
   context.subscriptions.push({
     dispose: () => {
       clearInterval(sweep);
+      clearInterval(useWatch);
       if (vaultTimer) clearTimeout(vaultTimer);
       if (vaultWatcher) { try { vaultWatcher.close(); } catch (e) { /* shutting down */ } }
-      for (const n of sessionKeys) { try { vault.remove(n); } catch (e) { /* shutting down */ } }
+      // Only what is still the very entry that was marked. A name that now
+      // points at a different key is someone else's work, not ours to delete.
+      let live = [];
+      try { live = vault.list().secrets || []; } catch (e) { /* unreadable: touch nothing */ }
+      for (const [n, id] of sessionKeys) {
+        const s = live.find(x => x.name === n);
+        if (!s || (id && s.id !== id)) continue;
+        try { vault.remove(n); } catch (e) { /* shutting down */ }
+      }
       try { vault.sweepTmp(0); } catch (e) { /* shutting down */ }
     }
   });

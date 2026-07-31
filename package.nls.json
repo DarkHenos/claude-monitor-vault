@@ -38,5 +38,16 @@
   "cfg.location": "Where the panel lives: the secondary side bar on the right, next to the chat, or the activity bar on the left. The mirror button in the panel title bar switches sides too.",
   "cmd.moveToSecondary": "Move next to the chat",
   "cmd.moveToPrimary": "Move back to the left side bar",
-  "welcome.movedRight": "The panel is next to the chat.\n[Bring it back to the left](command:claudeLimits.moveToPrimary)"
+  "welcome.movedRight": "The panel is next to the chat.\n[Bring it back to the left](command:claudeLimits.moveToPrimary)",
+  "cmd.vault.rename": "Rename a key",
+  "cmd.vault.replace": "Replace the value of a key",
+  "cmd.vault.recovery": "Create the backup key",
+  "cmd.vault.recoveryRestore": "Recover with a phrase",
+  "cmd.vault.trash": "Open the bin",
+  "cmd.vault.export": "Create the export file",
+  "cmd.vault.import": "Restore from a file",
+  "cmd.vault.togglePublic": "Public or secret",
+  "cmd.vault.terminal": "Open a vault terminal",
+  "cmd.vault.checkCommit": "Check what is staged for commit",
+  "cmd.vault.toggleConfirm": "Ask before every use"
 }

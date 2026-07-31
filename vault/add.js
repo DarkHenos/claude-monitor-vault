@@ -172,9 +172,14 @@ try {
 
   if (vault.policy().autoApprove) {
     const cur = vault.listFast().find(s => s.name === name) || {};
+    // Same rule as approveReplace: mcpServers and pub must be carried over, or
+    // an automatic approval quietly widens an MCP grant and re-derives a
+    // visibility the user had set by hand.
     const r = vault.put(name, value, {
       note: described, policy: cur.policy, expiresAt: cur.expiresAt,
-      maxUses: cur.maxUses, mcp: cur.mcp, by: 'claude'
+      maxUses: cur.maxUses, mcp: cur.mcp, mcpServers: cur.mcpServers, pub: cur.pub,
+      confirm: cur.confirm,
+      by: 'claude'
     });
     process.stdout.write(
       name + ' replaced without asking, because the user turned automatic approval on: ' +

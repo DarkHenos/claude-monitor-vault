@@ -2,7 +2,7 @@
   "name": "claude-monitor-vault",
   "displayName": "%ext.displayName%",
   "description": "%ext.description%",
-  "version": "0.58.21",
+  "version": "0.59.0",
   "l10n": "./l10n",
   "publisher": "alexossart",
   "license": "MIT",
@@ -211,6 +211,72 @@
         "icon": "$(edit)"
       },
       {
+        "command": "claudeVault.rename",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.rename%",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "claudeVault.replace",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.replace%",
+        "icon": "$(key)"
+      },
+      {
+        "command": "claudeVault.trash",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.trash%",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "claudeVault.checkCommit",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.checkCommit%",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "claudeVault.terminal",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.terminal%",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "claudeVault.export",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.export%",
+        "icon": "$(save)"
+      },
+      {
+        "command": "claudeVault.import",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.import%",
+        "icon": "$(history)"
+      },
+      {
+        "command": "claudeVault.togglePublic",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.togglePublic%",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "claudeVault.toggleConfirm",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.toggleConfirm%",
+        "icon": "$(bell)"
+      },
+      {
+        "command": "claudeVault.recovery",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.recovery%",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "claudeVault.recoveryRestore",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.recoveryRestore%",
+        "icon": "$(history)"
+      },
+      {
         "command": "claudeVault.autoApprove",
         "category": "%cat.vault%",
         "title": "%cmd.vault.autoApprove%",
@@ -256,6 +322,16 @@
           "command": "claudeVault.details",
           "when": "webviewSection == 'vaultKey'",
           "group": "1_usage@0"
+        },
+        {
+          "command": "claudeVault.rename",
+          "when": "webviewSection == 'vaultKey'",
+          "group": "2_acces@1"
+        },
+        {
+          "command": "claudeVault.replace",
+          "when": "webviewSection == 'vaultKey'",
+          "group": "2_acces@2"
         },
         {
           "command": "claudeVault.setNote",

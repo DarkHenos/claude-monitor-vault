@@ -20,7 +20,7 @@
   "cmd.vault.audit": "Journal d'accès",
   "cmd.vault.connect": "Connecter à Claude Code",
   "cmd.vault.disconnect": "Déconnecter de Claude Code",
-  "cfg.autoConnect": "Relier Claude Code automatiquement au démarrage de l'extension : hooks installés, serveurs MCP locaux routés par le proxy du coffre. Désactive ce réglage pour que Claude Code reste intact tant que tu n'as pas appuyé sur Connecter — ce qu'il te faudra alors refaire à chaque démarrage.",
+  "cfg.autoConnect": "Relier Claude Code automatiquement au démarrage de l'extension : hooks installés, serveurs MCP locaux routés par le proxy du coffre. Désactive ce réglage pour que Claude Code reste intact tant que tu n'as pas appuyé sur Connecter, ce qu'il te faudra alors refaire à chaque démarrage.",
   "cmd.vault.revokeAll": "Tout révoquer",
   "cfg.pollSeconds": "Secondes entre deux appels API. Un cache partagé entre toutes les fenêtres VS Code fait qu'une seule vraie requête les alimente toutes.",
   "cfg.alerts": "Prévenir quand la session de 5 h atteint 80 % puis 95 %, et la limite hebdomadaire 90 %.",
@@ -38,5 +38,16 @@
   "cfg.location": "Où vit le panneau : la barre latérale secondaire à droite, à côté du chat, ou la barre d'activité à gauche. Le bouton miroir de la barre de titre change aussi de côté.",
   "cmd.moveToSecondary": "Déplacer à côté du chat",
   "cmd.moveToPrimary": "Revenir dans la barre latérale gauche",
-  "welcome.movedRight": "Le panneau est à côté du chat.\n[Le ramener à gauche](command:claudeLimits.moveToPrimary)"
+  "welcome.movedRight": "Le panneau est à côté du chat.\n[Le ramener à gauche](command:claudeLimits.moveToPrimary)",
+  "cmd.vault.recovery": "Créer la clé de sauvegarde",
+  "cmd.vault.recoveryRestore": "Récupérer avec une phrase",
+  "cmd.vault.trash": "Ouvrir la corbeille",
+  "cmd.vault.rename": "Renommer une clé",
+  "cmd.vault.replace": "Remplacer la valeur",
+  "cmd.vault.export": "Créer le fichier d export",
+  "cmd.vault.import": "Restaurer depuis un fichier",
+  "cmd.vault.togglePublic": "Publique ou secrète",
+  "cmd.vault.terminal": "Ouvrir un terminal du coffre",
+  "cmd.vault.checkCommit": "Vérifier ce qui est en index pour le commit",
+  "cmd.vault.toggleConfirm": "Demander avant chaque usage"
 }

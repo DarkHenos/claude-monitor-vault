@@ -22,6 +22,8 @@ jobs:
             node --check "$f" || exit 1
           done
           node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+      - name: The bridge ships every file it requires
+        run: node tests/bridge-files.js
       - name: Translation bundles are aligned
         run: |
           node -e "

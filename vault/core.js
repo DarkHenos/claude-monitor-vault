@@ -18,6 +18,9 @@ const VAULT_PATH = path.join(VAULT_DIR, 'vault.json');
 const KEY_PATH = path.join(VAULT_DIR, 'masterkey.bin');
 const TOKENS_PATH = path.join(VAULT_DIR, 'tokens.json');
 const TMP_DIR = path.join(VAULT_DIR, 'tmp');
+const TRASH_PATH = path.join(VAULT_DIR, 'trash.json');
+const TRASH_INFO = 'claude-vault-trash-v1';
+const TRASH_DAYS = 30;
 
 const NAME_RE = /^[A-Z][A-Z0-9_]{1,63}$/;
 const KDF_INFO = 'claude-vault-secret-v1';
@@ -400,6 +403,346 @@ function saveRaw(v, structural) {
   // loadRaw() accepts, and the anti-replay guarantee still holds for the case
   // it exists to cover: an older vault put back in place.
   if (structural) bumpSeq(v.seq);
+  // Last, and never able to break the save: the export file mirrors a vault
+  // that is already safely on disk.
+  if (structural) { try { exportRefresh(); } catch (e) { /* reported by the panel */ } }
+}
+
+// -------------------------------------------------------------- export file
+//
+// One file, kept up to date on its own, that opens with the recovery phrase on
+// any machine. It replaces the twenty rotating copies that used to live beside
+// the vault: those died with the disk that held them, and a list of twenty
+// timestamps is a decision to make at the worst possible moment.
+//
+// The whole payload is encrypted, names included. A vault file leaves the
+// entries sealed but shows what they are called, and "this person holds a
+// STRIPE_SECRET_KEY" is exactly the kind of thing a file meant to leave the
+// machine should not say.
+//
+// Two doors, both leading to the same master key:
+//
+//   the 17 words  ->  recovery key  ->  envelope  ->  master key
+//   this machine  ->  OS secret store           ->  master key
+//
+// The second one is why re-importing your own file on your own machine asks
+// nothing. The first is why it still works on a machine that has never seen it.
+
+const EXPORT_MAGIC = 'claude-vault-export';
+const EXPORT_INFO = 'claude-vault-export-v1';
+const EXPORT_VERSION = 1;
+
+function exportKey(master) {
+  return Buffer.from(crypto.hkdfSync('sha256', master, Buffer.alloc(0),
+    Buffer.from(EXPORT_INFO, 'utf8'), 32));
+}
+
+// Refusing without a phrase is not pedantry: a file nobody can open anywhere
+// else is a copy of the problem, not a solution to it.
+function exportBuild() {
+  let env;
+  try { env = JSON.parse(fs.readFileSync(RECOVERY_PATH, 'utf8')); }
+  catch (e) { throw fail('set up the recovery phrase first: without it this file could only be opened on this machine'); }
+
+  const master = masterKey();
+  const v = loadRaw();
+  const payload = Buffer.from(JSON.stringify({
+    secrets: v.secrets, seq: v.seq || 0, v: VAULT_FORMAT
+  }), 'utf8');
+
+  const iv = crypto.randomBytes(12);
+  const k = exportKey(master);
+  const c = crypto.createCipheriv('aes-256-gcm', k, iv);
+  c.setAAD(Buffer.from(EXPORT_INFO, 'utf8'));
+  const ct = Buffer.concat([c.update(payload), c.final()]);
+  k.fill(0);
+  payload.fill(0);
+
+  return JSON.stringify({
+    magic: EXPORT_MAGIC, v: EXPORT_VERSION, at: Date.now(),
+    count: Object.keys(v.secrets).length,
+    recovery: env,
+    iv: b64(iv), tag: b64(c.getAuthTag()), ct: b64(ct)
+  });
+}
+
+function exportWrite(file) {
+  const text = exportBuild();
+  writeAtomic(String(file), text);
+  setPolicy(Object.assign(policy(), { exportPath: String(file), exportAt: Date.now() }));
+  return { file: String(file), bytes: text.length };
+}
+
+// Called after every structural save. Silent on failure by design: an unplugged
+// drive must not make saving a key fail, and the panel reports the staleness.
+function exportRefresh() {
+  const p = policy();
+  if (!p.exportPath) return false;
+  try {
+    writeAtomic(p.exportPath, exportBuild());
+    setPolicy(Object.assign(policy(), { exportAt: Date.now() }));
+    return true;
+  } catch (e) { return false; }
+}
+
+function exportStatus() {
+  const p = policy();
+  const st = { path: p.exportPath || null, at: p.exportAt || null, present: false, at_file: null };
+  if (!st.path) return st;
+  try {
+    const s = fs.statSync(st.path);
+    st.present = true;
+    st.at_file = s.mtimeMs;
+  } catch (e) { /* moved, unplugged, deleted */ }
+  return st;
+}
+
+function exportForget() {
+  const p = policy();
+  delete p.exportPath;
+  delete p.exportAt;
+  setPolicy(p);
+  return true;
+}
+
+// Reads the envelope of the file without writing anything, so the UI can say
+// what it holds and whether it will need the phrase BEFORE asking for it.
+function exportInspect(text) {
+  let f;
+  try { f = JSON.parse(String(text)); }
+  catch (e) { throw fail('this file is not a vault export'); }
+  if (!f || f.magic !== EXPORT_MAGIC) throw fail('this file is not a vault export');
+  if (Number(f.v) > EXPORT_VERSION) {
+    throw fail('this export comes from a newer version of the extension');
+  }
+  let local = false;
+  try { local = exportOpens(f, masterKey()); } catch (e) { /* no local key */ }
+  return { count: Number(f.count) || 0, at: Number(f.at) || 0, opensLocally: local };
+}
+
+// phrase is optional: on the machine that wrote the file, the local master key
+// opens it and nothing is asked.
+function exportImport(text, phrase) {
+  let f;
+  try { f = JSON.parse(String(text)); }
+  catch (e) { throw fail('this file is not a vault export'); }
+  if (!f || f.magic !== EXPORT_MAGIC) throw fail('this file is not a vault export');
+  if (Number(f.v) > EXPORT_VERSION) {
+    throw fail('this export comes from a newer version of the extension');
+  }
+
+  let master = null;
+  let mode = 'local';
+  // 1. this machine's own key, if it happens to be the right one
+  try {
+    const local = masterKey();
+    if (exportOpens(f, local)) master = local;
+  } catch (e) { /* no local key at all: the phrase is the only way */ }
+
+  // 2. otherwise the words, which also reinstate the key locally
+  if (!master) {
+    mode = 'phrase';
+    if (!phrase) throw fail('this export was written by another machine: enter its recovery phrase');
+    const entropy = phraseDecode(phrase);
+    const r = f.recovery;
+    if (!r || !r.salt || !r.iv || !r.tag || !r.ct) throw fail('this export carries no recovery envelope');
+    const rk = recoveryKey(entropy, unb64(r.salt));
+    const d = crypto.createDecipheriv('aes-256-gcm', rk, unb64(r.iv));
+    d.setAAD(Buffer.from(RECOVERY_INFO, 'utf8'));
+    d.setAuthTag(unb64(r.tag));
+    let key;
+    try { key = Buffer.concat([d.update(unb64(r.ct)), d.final()]); }
+    catch (e) { rk.fill(0); throw fail('the recovery phrase does not open this export'); }
+    rk.fill(0);
+    if (key.length !== 32) throw fail('master key corrupted');
+    if (!exportOpens(f, key)) throw fail('the recovery phrase does not open this export');
+    master = key;
+  }
+
+  const data = exportOpen(f, master);
+  if (!data || !data.secrets) throw fail('this export holds no vault');
+
+  // The counter only ever moves forward. A vault brought back verbatim looks
+  // exactly like the replay this counter exists to catch.
+  const seq = Math.max(currentSeq(), Number(data.seq) || 0);
+  if (mode === 'phrase') {
+    _master = master;
+    _masterMode = null;
+    storeKey(master, seq);
+  }
+  const v = { v: VAULT_FORMAT, seq, secrets: data.secrets, audit: [] };
+  audit(v, 'import', null, mode, 'user');
+  saveRaw(v, true);
+  return { secrets: Object.keys(data.secrets).length, mode, at: Number(f.at) || 0 };
+}
+
+function exportOpen(f, master) {
+  const k = exportKey(master);
+  const d = crypto.createDecipheriv('aes-256-gcm', k, unb64(f.iv));
+  d.setAAD(Buffer.from(EXPORT_INFO, 'utf8'));
+  d.setAuthTag(unb64(f.tag));
+  try {
+    const clear = Buffer.concat([d.update(unb64(f.ct)), d.final()]);
+    k.fill(0);
+    return JSON.parse(clear.toString('utf8'));
+  } catch (e) { k.fill(0); return null; }
+}
+
+function exportOpens(f, master) {
+  try { return exportOpen(f, master) !== null; } catch (e) { return false; }
+}
+
+// ----------------------------------------------------------- the commit guard
+//
+// Answers one question: does this text contain one of your own secrets? It
+// compares fingerprints, never values, so nothing is decrypted and the answer
+// is exact. No entropy heuristic, no list of provider prefixes, and therefore
+// no false positives to train the user into ignoring it.
+//
+// Two things keep this honest. The fingerprint is an HMAC keyed by the master
+// key, so nobody without the vault can compute one. And it lives here, called
+// by the extension, never by a git hook: a hook is a thing any repository can
+// trigger, and a guard that answers "is this string one of your secrets" on
+// demand is an oracle before it is a guard.
+//
+// Keys marked public are skipped. A Stripe pk_ belongs in the commit.
+
+// '=' is NOT a token character, it is base64 padding at the very end. Left in
+// the class, the commonest form of all — VAR=value — matched as a single token
+// "API_KEY=sk-ant-..." and fingerprinted to nothing.
+const SCAN_TOKEN = /[A-Za-z0-9_\-+/.~]{12,}={0,2}/g;
+const SCAN_PEM = /-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g;
+const SCAN_MAX = 40000;                     // candidates per call, a hard stop
+
+function knownFingerprints() {
+  let v;
+  try { v = JSON.parse(fs.readFileSync(VAULT_PATH, 'utf8')); }
+  catch (e) { return null; }
+  if (!v || !v.secrets) return null;
+  const index = new Map();
+  for (const id of Object.keys(v.secrets)) {
+    const s = v.secrets[id];
+    if (s.pub || !s.fingerprint) continue;
+    index.set(s.fingerprint, s.name);
+  }
+  return index.size ? index : null;
+}
+
+// Returns the names of the keys whose value appears in the text. Empty on any
+// doubt: this runs on the save path, and it must never be the reason an editor
+// stutters or an error appears.
+function scanText(text) {
+  const index = knownFingerprints();
+  if (!index) return [];
+  const s = String(text || '');
+  if (!s) return [];
+  const hits = new Set();
+  const seen = new Set();
+  try {
+    // Whole PEM blocks first: a private key spans lines, so no token match can
+    // ever find it.
+    for (const m of s.matchAll(SCAN_PEM)) {
+      const name = index.get(fingerprint(m[0]));
+      if (name) hits.add(name);
+    }
+    for (const m of s.matchAll(SCAN_TOKEN)) {
+      const tok = m[0];
+      if (seen.has(tok)) continue;
+      seen.add(tok);
+      if (seen.size > SCAN_MAX) break;
+      let name = index.get(fingerprint(tok));
+      // A diff line begins with '+', and '+' is a legal base64 character, so a
+      // bare value on an added line arrives glued to it.
+      if (!name && (tok[0] === '+' || tok[0] === '-') && tok.length > 13) {
+        name = index.get(fingerprint(tok.slice(1)));
+      }
+      if (name) hits.add(name);
+    }
+  } catch (e) { return []; }
+  return Array.from(hits);
+}
+
+// ------------------------------------------------------------------- the bin
+//
+// Deleting the wrong line is the most ordinary accident there is, and until now
+// one confirmation stood between it and a value nobody could ever see again.
+// A deleted entry now waits {TRASH_DAYS} days here, still sealed, before it
+// really goes.
+//
+// It lives in its own file rather than inside the vault: putting it in vault.json
+// would mean changing the signed format, and a format migration that goes wrong
+// costs the user every key. A separate file with its own signature buys the
+// same integrity for none of that risk.
+
+function trashMac(items) {
+  return crypto.createHmac('sha256', derive(TRASH_INFO, Buffer.alloc(0), 32))
+    .update(JSON.stringify(items.map(i => [i.id, i.name, i.ct, i.deletedAt]))).digest('base64');
+}
+
+function readTrash() {
+  let t;
+  try { t = JSON.parse(fs.readFileSync(TRASH_PATH, 'utf8')); }
+  catch (e) { return []; }
+  if (!t || !Array.isArray(t.items)) return [];
+  // A bin whose signature does not match is dropped, not repaired: it holds
+  // nothing the vault needs, and resurrecting an entry someone else slipped in
+  // is exactly what the signature is here to prevent.
+  if (!t.mac || !equalCT(t.mac, trashMac(t.items))) return [];
+  return t.items;
+}
+
+function writeTrash(items) {
+  writeAtomic(TRASH_PATH, JSON.stringify({ v: 1, items, mac: trashMac(items) }, null, 0));
+}
+
+function trashPut(entry) {
+  const items = readTrash().filter(i => i.id !== entry.id);
+  items.push(Object.assign({}, entry, { deletedAt: Date.now() }));
+  writeTrash(purgeTrashList(items));
+}
+
+function purgeTrashList(items) {
+  const cutoff = Date.now() - TRASH_DAYS * 86400000;
+  return items.filter(i => (i.deletedAt || 0) >= cutoff);
+}
+
+function purgeTrash() {
+  const items = readTrash();
+  const kept = purgeTrashList(items);
+  if (kept.length !== items.length) writeTrash(kept);
+  return items.length - kept.length;
+}
+
+// Names and dates only. Same rule as everywhere else in this file: no read path.
+function listTrash() {
+  return readTrash().map(i => ({
+    id: i.id, name: i.name, deletedAt: i.deletedAt || 0,
+    kind: i.kind || 'secret', length: i.length || 0,
+    expiresIn: Math.max(0, (i.deletedAt || 0) + TRASH_DAYS * 86400000 - Date.now())
+  })).sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+function restoreTrashed(id) {
+  const items = readTrash();
+  const it = items.find(i => i.id === id);
+  if (!it) throw fail('nothing in the bin under that reference');
+  const v = loadRaw();
+  if (findByName(v, it.name)) {
+    throw fail('{0} exists again in the vault: rename it before restoring this one', it.name);
+  }
+  const entry = Object.assign({}, it);
+  delete entry.deletedAt;
+  v.secrets[entry.id] = entry;
+  audit(v, 'untrash', entry.name, null, 'user');
+  saveRaw(v, true);
+  writeTrash(items.filter(i => i.id !== id));
+  return { name: entry.name };
+}
+
+function emptyTrash() {
+  const n = readTrash().length;
+  try { fs.unlinkSync(TRASH_PATH); } catch (e) { /* already gone */ }
+  return n;
 }
 
 // The log is bounded on two axes, and both matter for a different reason.
@@ -445,6 +788,19 @@ function aad(entry) {
     policy: entry.policy, maxUses: entry.maxUses || 0
   };
   if (entry.mcp) a.mcp = true;
+  // In the AAD, and conditionally like the rest, because the flag has teeth:
+  // it decides whether the commit guard looks at this key at all. Flipping a
+  // secret to "public" by editing the JSON now breaks the seal instead of
+  // quietly disarming the guard.
+  if (entry.pub) a.pub = true;
+  // Conditional like the others, and in the AAD for the same reason as pub:
+  // clearing this flag by editing the JSON would silently remove the question
+  // the user asked to be asked.
+  if (entry.confirm) a.cfm = true;
+  // Same conditional rule, same reason: a key authorised for every server
+  // carries no server list, so its AAD is byte for byte what it always was.
+  // Sorted, because the order the user picked them in is not part of the grant.
+  if (entry.mcpServers && entry.mcpServers.length) a.srv = entry.mcpServers.slice().sort();
   return Buffer.from(JSON.stringify(a), 'utf8');
 }
 
@@ -508,6 +864,46 @@ function detectKind(value) {
   return 'secret';
 }
 
+// ------------------------------------------------------- publishable values
+//
+// Plenty of services hand out a pair whose public half is meant to sit in client
+// code: Stripe's pk_, Supabase's anon key, a Turnstile sitekey. Keeping them in
+// the vault is perfectly reasonable — one place for the whole configuration —
+// but treating them as secrets means warning about them, and a warning that is
+// wrong three times gets the whole feature switched off.
+//
+// The detection is deliberately timid. Marking a real secret as public is the
+// dangerous mistake: it is the one that would quietly exclude it from the
+// commit guard. So only unmistakable published forms count, and the name alone
+// is never enough — PUBLIC_KEY is what half the world calls its PRIVATE key's
+// counterpart, and RSA private keys live in files called id_rsa.pub's sibling.
+const PUBLISHABLE = [
+  /^pk_(live|test)_[A-Za-z0-9]/,             // Stripe publishable
+  /^pk\.eyJ[\w-]+\.[\w-]+/,                  // Mapbox public token
+  /^0x4AAAAAAA[A-Za-z0-9_-]/,                // Cloudflare Turnstile sitekey
+  /^rzp_(live|test)_/                        // Razorpay key id
+  // A "pub_" catch-all used to sit here. I could not name a single provider
+  // that issues it, and a pattern I cannot attribute has no business deciding
+  // that a value stops being watched.
+];
+
+function detectPublic(value) {
+  const s = String(value || '');
+  for (const re of PUBLISHABLE) if (re.test(s)) return true;
+  // Supabase and friends ship an anon key as a JWT whose payload says so. The
+  // role is inside the token, so this reads what the value itself claims to be
+  // rather than guessing from its shape.
+  const m = /^eyJ[\w-]+\.([\w-]+)\./.exec(s);
+  if (m) {
+    try {
+      const p = JSON.parse(Buffer.from(m[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64')
+        .toString('utf8'));
+      if (p && (p.role === 'anon' || p.role === 'public')) return true;
+    } catch (e) { /* not a readable payload: treat as secret */ }
+  }
+  return false;
+}
+
 // The kind is written into the metadata at creation time, and until now it was
 // written in French. Existing keys are not re-encrypted just for this: they are
 // mapped back to the English source label at display time, and translation
@@ -540,11 +936,14 @@ function isExpired(entry, now) {
 function sweep() {
   let v;
   try { v = loadRaw(); } catch (e) { return []; }
+  try { purgeTrash(); } catch (e) { /* the bin must never block the vault */ }
   const now = Date.now();
   const gone = [];
   for (const id of Object.keys(v.secrets)) {
     if (isExpired(v.secrets[id], now)) {
       gone.push(v.secrets[id].name);
+      // An expiry is the user's own instruction, on a schedule they set. Putting
+      // it in the bin would quietly keep alive exactly what they asked to end.
       audit(v, 'expire', v.secrets[id].name, null);
       delete v.secrets[id];
     }
@@ -555,11 +954,31 @@ function sweep() {
 
 // -------------------------------------------------------------------- public API
 
+// What a person types becomes a usable name instead of an error message.
+// Accents lose their marks — é gives E — spaces and every other separator or
+// symbol become a single underscore, and the result is upper-cased:
+// "clé api Mailjet" gives CLE_API_MAILJET. Already-valid names pass through
+// untouched, which is what lets the hook resolve a {{vault:NAME}} marker with
+// the very same function.
+function normalizeName(name) {
+  let n = String(name == null ? '' : name)
+    // Combining diacritical marks, escaped rather than pasted literally so the
+    // range survives any re-encoding of this file.
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')   // é -> e, ç -> c
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64);
+  return n.replace(/_+$/, '');    // the slice above can leave one dangling
+}
+
 function validateName(name) {
-  const n = String(name || '').trim();
+  const n = normalizeName(name);
   if (!NAME_RE.test(n)) {
-    throw fail('Invalid name: uppercase letters, digits and underscores only, ' +
-      'starting with a letter, 2 to 64 characters (e.g. VPS_SSH_KEY).');
+    throw fail('Invalid name: it must start with a letter and keep 2 to 64 ' +
+      'letters or digits. Spaces and accents are accepted and converted ' +
+      '(e.g. "clé ssh vps" becomes CLE_SSH_VPS).');
   }
   return n;
 }
@@ -575,7 +994,7 @@ function list() {
       id, name: s.name, kind: s.kind, hint: s.hint, length: s.length,
       fingerprint: s.fingerprint, policy: s.policy,
       createdAt: s.createdAt, expiresAt: s.expiresAt || null,
-      maxUses: s.maxUses || null, uses: s.uses || 0,
+      maxUses: s.maxUses || null, uses: s.uses || 0, pub: !!s.pub, confirm: !!s.confirm,
       lastUsedAt: s.lastUsedAt || null,
       expiresIn: s.expiresAt ? Math.max(0, s.expiresAt - now) : null,
       note: s.note || null
@@ -600,7 +1019,10 @@ function listFast() {
     return {
       name: s.name, kind: s.kind, hint: s.hint, length: s.length, note: s.note || null,
       createdBy: s.createdBy || null,
-      policy: s.policy, isFile: !!s.isFile, mcp: !!s.mcp, uses: s.uses || 0,
+      policy: s.policy, isFile: !!s.isFile, mcp: !!s.mcp,
+      mcpServers: (s.mcpServers && s.mcpServers.length) ? s.mcpServers.slice() : null,
+      pub: !!s.pub, confirm: !!s.confirm,
+      uses: s.uses || 0,
       lastUsedAt: s.lastUsedAt || null,
       createdAt: s.createdAt, expiresAt: s.expiresAt || null, maxUses: s.maxUses || null,
       expiresIn: s.expiresAt ? Math.max(0, s.expiresAt - now) : null,
@@ -614,7 +1036,9 @@ function listFast() {
 }
 
 function findByName(v, name) {
-  const n = String(name || '').toUpperCase();
+  // Normalised on the way in too, so looking a key up is as forgiving as
+  // creating one: "ma cle" finds MA_CLE.
+  const n = normalizeName(name);
   for (const id of Object.keys(v.secrets)) {
     if (v.secrets[id].name === n) return v.secrets[id];
   }
@@ -656,6 +1080,11 @@ function put(name, value, opts) {
     // default: unlike the shell, the value there travels through the tool
     // call machinery instead of staying in a process's memory.
     mcp: !!o.mcp,
+    mcpServers: (o.mcp && Array.isArray(o.mcpServers) && o.mcpServers.length)
+      ? o.mcpServers.map(x => String(x)).slice(0, 32) : null,
+    // Detected, never assumed: an explicit choice always wins over the guess.
+    pub: o.pub === undefined ? detectPublic(value) : !!o.pub,
+    confirm: !!o.confirm,
     note: o.note || null
   };
   // Who authored the value, kept on the entry itself so the key can say it
@@ -674,10 +1103,72 @@ function put(name, value, opts) {
   return { name: n, replaced: !!existing, fingerprint: entry.fingerprint, kind: entry.kind };
 }
 
+// Replaces the VALUE and nothing else. put() rebuilds the whole entry from the
+// options it is given, so calling it plainly here would silently drop the
+// expiry, the use cap, the MCP authorisation and the description — the owner
+// would think they had only pasted a new value. The old value is overwritten
+// and unrecoverable, which is the point.
+function replaceValue(name, value) {
+  const v = loadRaw();
+  const s = findByName(v, name);
+  if (!s) {
+    const names = Object.keys(v.secrets).map(id => v.secrets[id].name);
+    const e = fail('unknown key: {0}', name);
+    e.suggestions = suggest(name, names);
+    throw e;
+  }
+  return put(s.name, value, {
+    policy: s.policy,
+    expiresAt: s.expiresAt,
+    maxUses: s.maxUses,
+    mcp: s.mcp,
+    mcpServers: s.mcpServers,
+    pub: s.pub,
+    confirm: s.confirm,
+    note: s.note,
+    by: 'user'
+  });
+}
+
+// Renaming is NOT a field assignment. The name is part of the AAD that seals
+// the value, so the entry has to be opened under the old name and sealed again
+// under the new one. Writing s.name = n and saving would leave a secret nobody
+// could ever decrypt again — the tag would never match.
+function rename(oldName, newName) {
+  const to = validateName(newName);
+  const v = loadRaw();
+  const s = findByName(v, oldName);
+  if (!s) {
+    const names = Object.keys(v.secrets).map(id => v.secrets[id].name);
+    const e = fail('unknown key: {0}', oldName);
+    e.suggestions = suggest(oldName, names);
+    throw e;
+  }
+  const from = s.name;
+  if (from === to) return { from, name: to, unchanged: true };
+  if (findByName(v, to)) throw fail('a key named {0} already exists', to);
+  // A pending replacement is sealed under the OLD name as well. Rather than
+  // re-seal a value Claude submitted and the owner has not looked at yet, we
+  // ask for that decision first.
+  if (v.replace && v.replace[from]) {
+    throw fail('a replacement is waiting for {0}: approve or reject it before renaming', from);
+  }
+
+  const value = open(s);
+  s.name = to;
+  s.ct = seal(s, value);          // resealed under the new AAD
+  audit(v, 'rename', to, from, 'user');
+  saveRaw(v, true);
+  return { from, name: to };
+}
+
 function remove(name) {
   const v = loadRaw();
   const s = findByName(v, name);
   if (!s) return false;
+  // Into the bin first: if that write fails, the key is still in the vault
+  // rather than nowhere at all.
+  trashPut(s);
   delete v.secrets[s.id];
   audit(v, 'delete', s.name, null, 'user');
   saveRaw(v, true);
@@ -701,27 +1192,75 @@ function setTtl(name, expiresAt, maxUses) {
 // Authorizes (or revokes) injection into an MCP tool's arguments. Since the
 // flag is part of the authenticated data, it requires re-encryption: it
 // cannot be turned on just by editing the file.
-function setMcp(name, allowed) {
+// servers: undefined or [] means every MCP server, a non-empty list restricts
+// the grant to those names. Blanket authorisation was the only option until
+// now, so a key needed by one server was exposed to all of them.
+function setMcp(name, allowed, servers) {
+  const v = loadRaw();
+  const s = findByName(v, name);
+  if (!s) throw fail('unknown key: {0}', name);
+  const list = Array.isArray(servers)
+    ? servers.map(x => String(x)).filter(Boolean).slice(0, 32)
+    : [];
+  const value = open(s);
+  s.mcp = !!allowed;
+  s.mcpServers = (allowed && list.length) ? list : null;
+  s.ct = seal(s, value);
+  audit(v, 'mcp', s.name,
+    allowed ? (s.mcpServers ? s.mcpServers.join(',') : 'allowed') : 'removed', 'user');
+  saveRaw(v, true);
+  return !!allowed;
+}
+
+// The flag sits in the AAD, so changing it re-seals the entry — the same price
+// the MCP authorisation pays, for the same reason.
+function setPublic(name, isPublic) {
   const v = loadRaw();
   const s = findByName(v, name);
   if (!s) throw fail('unknown key: {0}', name);
   const value = open(s);
-  s.mcp = !!allowed;
+  s.pub = !!isPublic;
   s.ct = seal(s, value);
-  audit(v, 'mcp', s.name, allowed ? 'allowed' : 'removed', 'user');
+  audit(v, 'visibility', s.name, isPublic ? 'public' : 'secret', 'user');
   saveRaw(v, true);
-  return !!allowed;
+  return !!isPublic;
+}
+
+// The single place that answers "may this server use this key?", so the proxy
+// and the UI can never drift apart on the answer.
+function mcpAllows(entry, serverName) {
+  if (!entry || !entry.mcp) return false;
+  if (!entry.mcpServers || !entry.mcpServers.length) return true;
+  return entry.mcpServers.indexOf(String(serverName)) !== -1;
 }
 
 // Full revocation: new master key, everything existing becomes unreadable.
 // Must work even on a corrupted or tampered vault: that is precisely the
 // situation where we want to be able to discard everything. Never go through
 // loadRaw() here.
-function revokeAll() {
+// Takes an explicit token, and this is not ceremony: called with no argument,
+// this function destroyed a real vault of eleven keys during a test run that
+// meant to hit a throwaway profile. Nothing in the old signature distinguished
+// "the user pressed the panic button" from "a script reached this line".
+// The UI passes the token; a stray call now throws instead of erasing.
+function revokeAll(confirm) {
+  if (confirm !== 'REVOKE') {
+    throw fail('revokeAll requires its confirmation token: this call would have destroyed every key');
+  }
   let n = 0;
   try { n = Object.keys(JSON.parse(fs.readFileSync(VAULT_PATH, 'utf8')).secrets || {}).length; }
   catch (e) { /* vault absent or unreadable: revoke anyway */ }
   try { fs.unlinkSync(VAULT_PATH); } catch (e) { /* already gone */ }
+  // Both of these are sealed under the key we are about to throw away. The
+  // export file would simply stop decrypting, but the recovery envelope is
+  // worse: it holds the OLD key, so restoring from it after a revocation would
+  // put back a key that no longer opens anything.
+  try { fs.unlinkSync(RECOVERY_PATH); } catch (e) { /* none set up */ }
+  try { fs.unlinkSync(TRASH_PATH); } catch (e) { /* nothing binned */ }
+  // The export file itself is left where it is: it may sit on a drive that is
+  // not plugged in, and deleting a file the user put somewhere on purpose is
+  // not this function's job. It stops being refreshed, and stops opening.
+  try { exportForget(); } catch (e) { /* no policy file */ }
   const seq = currentSeq() + 1;
   _master = crypto.randomBytes(32);
   storeKey(_master, seq);
@@ -750,6 +1289,13 @@ function consume(name, who) {
     audit(v, 'expire', s.name, null);
     saveRaw(v, true);
     throw fail('expired key: {0}', s.name);
+  }
+  // Asked BEFORE the counter moves and before anything is decrypted: a refused
+  // use must leave no trace beyond the log line.
+  if (s.confirm && !askUse(s.name, who)) {
+    audit(v, 'use-refused', s.name, who || null, 'user');
+    saveRaw(v, false);
+    throw fail('{0} needs your confirmation for every use, and it was not given', s.name);
   }
   const value = open(s);
   s.uses = (s.uses || 0) + 1;
@@ -1046,10 +1592,18 @@ function approveReplace(name) {
   // The value was authored by Claude; the approval is the user's own journal
   // line just below. createdBy therefore says 'claude', which answers the
   // question "where does the CURRENT value come from".
+  // mcpServers and pub travel with mcp, and forgetting them here was not a
+  // cosmetic loss: put() resets an absent mcpServers to null, which turns a
+  // grant restricted to one named server into a grant valid for every server —
+  // on the one path where the value was authored by Claude. Same story for pub,
+  // which put() would re-derive from the new value and so overwrite a choice
+  // the user made explicitly.
   const cur = findByName(v, n);
   const opts = cur ? {
     policy: cur.policy, expiresAt: cur.expiresAt,
-    maxUses: cur.maxUses, mcp: cur.mcp, note: p.note || cur.note, by: 'claude'
+    maxUses: cur.maxUses, mcp: cur.mcp, mcpServers: cur.mcpServers, pub: cur.pub,
+    confirm: cur.confirm,
+    note: p.note || cur.note, by: 'claude'
   } : { note: p.note, by: 'claude' };
 
   delete v.replace[n];
@@ -1069,6 +1623,91 @@ function rejectReplace(name) {
   return true;
 }
 
+// ------------------------------------------------------- confirm on every use
+//
+// Opt in, key by key. The default does not move: you ask Claude, Claude uses the
+// key, nobody is interrupted. This exists for the handful of keys where the
+// opposite is what you want, a production database, a live payment key.
+//
+// The awkward part is where the question is born. consume() runs inside a hook,
+// a bare node process with no editor to draw a dialog in. So the hook writes the
+// request to a file and waits; the extension sees the file, asks the human, and
+// writes the answer back. Nobody there, or nobody answering: the use is refused.
+// A key guarded this way must fail closed, or the guard is decoration.
+
+const USE_PATH = path.join(VAULT_DIR, 'pending-use.json');
+const USE_TTL_MS = 120000;
+const USE_WAIT_MS = 55000;                  // under the hook timeout, on purpose
+
+function readUses() {
+  try {
+    const p = JSON.parse(fs.readFileSync(USE_PATH, 'utf8'));
+    return p && typeof p === 'object' ? p : {};
+  } catch (e) { return {}; }
+}
+
+function pruneUses(all) {
+  const cutoff = Date.now() - USE_TTL_MS;
+  for (const id of Object.keys(all)) if (!all[id] || all[id].at < cutoff) delete all[id];
+  return all;
+}
+
+// Waiting requests, for the extension to ask about.
+function pendingUses() {
+  const all = pruneUses(readUses());
+  return Object.keys(all).filter(id => all[id].state === 'wait')
+    .map(id => ({ id, name: all[id].name, who: all[id].who || null, at: all[id].at }));
+}
+
+function answerUse(id, ok) {
+  const all = pruneUses(readUses());
+  if (!all[id]) return false;
+  all[id].state = ok ? 'ok' : 'no';
+  writeAtomic(USE_PATH, JSON.stringify(all));
+  return true;
+}
+
+// A synchronous wait, because consume() is synchronous and every caller of it is
+// a process whose only job right now is this one command.
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+  catch (e) { const t = Date.now(); while (Date.now() - t < ms) { /* spin */ } }
+}
+
+function askUse(name, who) {
+  ensureDirs();
+  const id = crypto.randomUUID();
+  const all = pruneUses(readUses());
+  all[id] = { id, name, who: who || null, at: Date.now(), state: 'wait' };
+  writeAtomic(USE_PATH, JSON.stringify(all));
+
+  const until = Date.now() + USE_WAIT_MS;
+  let verdict = false;
+  for (;;) {
+    const cur = readUses()[id];
+    if (!cur || cur.state === 'no') break;
+    if (cur.state === 'ok') { verdict = true; break; }
+    if (Date.now() > until) break;
+    sleepSync(250);
+  }
+  const after = pruneUses(readUses());
+  delete after[id];
+  try { writeAtomic(USE_PATH, JSON.stringify(after)); } catch (e) { /* it expires anyway */ }
+  return verdict;
+}
+
+function setConfirm(name, on) {
+  const v = loadRaw();
+  const s = findByName(v, name);
+  if (!s) throw fail('unknown key: {0}', name);
+  const value = open(s);
+  s.confirm = !!on;
+  s.ct = seal(s, value);
+  audit(v, 'confirm', s.name, on ? 'on' : 'off', 'user');
+  saveRaw(v, true);
+  return !!on;
+}
+
 // Local policy, read by add.js which has no access to VSCode settings. Kept in
 // the vault directory, so the guard already puts it out of reach of a shell:
 // Claude cannot grant itself the permission it is being denied.
@@ -1077,13 +1716,22 @@ const POLICY_PATH = path.join(VAULT_DIR, 'policy.json');
 function policy() {
   try {
     const p = JSON.parse(fs.readFileSync(POLICY_PATH, 'utf8'));
-    return { autoApprove: !!(p && p.autoApprove) };
-  } catch (e) { return { autoApprove: false }; }
+    return {
+      autoApprove: !!(p && p.autoApprove),
+      exportPath: (p && typeof p.exportPath === 'string') ? p.exportPath : null,
+      exportAt: (p && Number(p.exportAt)) || null
+    };
+  } catch (e) { return { autoApprove: false, exportPath: null, exportAt: null }; }
 }
 
 function setPolicy(o) {
   ensureDirs();
-  writeAtomic(POLICY_PATH, JSON.stringify({ autoApprove: !!(o && o.autoApprove), at: Date.now() }));
+  writeAtomic(POLICY_PATH, JSON.stringify({
+    autoApprove: !!(o && o.autoApprove),
+    exportPath: (o && typeof o.exportPath === 'string' && o.exportPath) ? o.exportPath : null,
+    exportAt: (o && Number(o.exportAt)) || null,
+    at: Date.now()
+  }));
   return policy();
 }
 
@@ -1207,6 +1855,120 @@ function issue(level, e) {
   return { level, msg: e.message, tpl: e.tpl || null, args: e.args || [] };
 }
 
+// ------------------------------------------------------------------ phrase de secours
+//
+// La clé maîtresse est scellée par le magasin de secrets de l'OS. Si ce magasin
+// disparaît — nouvelle machine, profil Windows réinitialisé, trousseau vidé —
+// le coffre est définitivement illisible. La phrase de secours est une SECONDE
+// enveloppe, indépendante de l'OS, ouverte par 17 mots générés ici et notés par
+// l'utilisateur.
+//
+// Pourquoi des mots générés plutôt qu'une phrase choisie : une phrase humaine
+// dépasse rarement 40 bits d'entropie, ces 17 mots en portent 128. Et pourquoi
+// HKDF plutôt qu'un scrypt : une dérivation coûteuse ne sert qu'à compenser un
+// secret faible. Ici le secret est déjà uniforme sur 128 bits, il n'y a rien à
+// compenser — ralentir ne protégerait que contre une attaque déjà impossible.
+const RECOVERY_PATH = path.join(VAULT_DIR, 'recovery.bin');
+const RECOVERY_INFO = 'claude-vault-recovery-v1';
+const WORDS = require('./wordlist.js');
+const PHRASE_BYTES = 16;                    // 128 bits + 1 octet de contrôle = 17 mots
+
+function phraseEncode(entropy) {
+  const sum = crypto.createHash('sha256').update(entropy).digest()[0];
+  return Array.from(Buffer.concat([entropy, Buffer.from([sum])])).map(b => WORDS[b]);
+}
+
+// Tolérant à la saisie : casse, ponctuation, espaces multiples, et un mot
+// reconnu sur ses trois premières lettres — le dictionnaire garantit qu'elles
+// sont uniques, donc « elep » suffit pour « elephant ».
+function phraseDecode(input) {
+  const raw = String(input || '').toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  if (raw.length !== PHRASE_BYTES + 1) {
+    throw fail('the recovery phrase must hold {0} words, {1} given', PHRASE_BYTES + 1, raw.length);
+  }
+  const bytes = [];
+  for (const w of raw) {
+    let i = WORDS.indexOf(w);
+    if (i === -1) {
+      const p = w.slice(0, 3);
+      const hits = [];
+      for (let k = 0; k < WORDS.length; k++) if (WORDS[k].slice(0, 3) === p) hits.push(k);
+      if (hits.length === 1) i = hits[0];
+    }
+    if (i === -1) throw fail('unknown word in the recovery phrase: {0}', w);
+    bytes.push(i);
+  }
+  const entropy = Buffer.from(bytes.slice(0, PHRASE_BYTES));
+  const sum = crypto.createHash('sha256').update(entropy).digest()[0];
+  if (sum !== bytes[PHRASE_BYTES]) {
+    throw fail('the recovery phrase is not valid: check the words and their order');
+  }
+  return entropy;
+}
+
+function recoveryKey(entropy, salt) {
+  return Buffer.from(crypto.hkdfSync('sha256', entropy, salt,
+    Buffer.from(RECOVERY_INFO, 'utf8'), 32));
+}
+
+function recoveryStatus() {
+  try {
+    const r = JSON.parse(fs.readFileSync(RECOVERY_PATH, 'utf8'));
+    return { enabled: true, at: r.at || null };
+  } catch (e) { return { enabled: false, at: null }; }
+}
+
+// Rend la phrase UNE SEULE FOIS. Elle n'est stockée nulle part : seule
+// l'enveloppe qu'elle ouvre l'est.
+function recoveryEnable() {
+  const key = masterKey();
+  const entropy = crypto.randomBytes(PHRASE_BYTES);
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const rk = recoveryKey(entropy, salt);
+  const c = crypto.createCipheriv('aes-256-gcm', rk, iv);
+  c.setAAD(Buffer.from(RECOVERY_INFO, 'utf8'));
+  const ct = Buffer.concat([c.update(key), c.final()]);
+  rk.fill(0);
+  writeAtomic(RECOVERY_PATH, JSON.stringify({
+    v: 1, at: Date.now(), salt: b64(salt), iv: b64(iv),
+    tag: b64(c.getAuthTag()), ct: b64(ct)
+  }));
+  return phraseEncode(entropy);
+}
+
+function recoveryDisable() {
+  try { fs.unlinkSync(RECOVERY_PATH); } catch (e) { /* déjà absent */ }
+  return true;
+}
+
+// Rouvre le coffre avec la phrase, puis REPOSE la clé dans le magasin de l'OS :
+// la récupération ne doit pas laisser l'utilisateur dépendant de sa phrase.
+function recoveryRestore(phrase) {
+  const entropy = phraseDecode(phrase);
+  let r;
+  try { r = JSON.parse(fs.readFileSync(RECOVERY_PATH, 'utf8')); }
+  catch (e) { throw fail('no recovery phrase has been set up on this vault'); }
+  const rk = recoveryKey(entropy, unb64(r.salt));
+  const d = crypto.createDecipheriv('aes-256-gcm', rk, unb64(r.iv));
+  d.setAAD(Buffer.from(RECOVERY_INFO, 'utf8'));
+  d.setAuthTag(unb64(r.tag));
+  let key;
+  try { key = Buffer.concat([d.update(unb64(r.ct)), d.final()]); }
+  catch (e) { rk.fill(0); throw fail('the recovery phrase does not open this vault'); }
+  rk.fill(0);
+  if (key.length !== 32) throw fail('master key corrupted');
+
+  // Le compteur du coffre fait foi : le fichier de clé doit repartir au même
+  // niveau, sinon loadRaw() refuserait le coffre comme périmé.
+  let seq = 0;
+  try { seq = JSON.parse(fs.readFileSync(VAULT_PATH, 'utf8')).seq || 0; } catch (e) { /* coffre neuf */ }
+  _master = key;
+  _masterMode = null;
+  storeKey(key, seq);
+  return { mode: _masterMode, secrets: listFast().length };
+}
+
 function healthCheck() {
   const issues = [];
   ensureDirs();
@@ -1251,10 +2013,17 @@ function healthCheck() {
 
 module.exports = {
   VAULT_DIR, VAULT_PATH, KEY_PATH, TMP_DIR, NAME_RE,
-  validateName, list, listFast, put, remove, setTtl, setMcp, setNote, revokeAll, consume, reveal, peek,
+  validateName, normalizeName, list, listFast, put, rename, replaceValue, remove, setTtl, setMcp, setNote,
+  setPublic, detectPublic, setConfirm, pendingUses, answerUse,
+  revokeAll, consume, reveal, peek,
   requestReplace, pendingReplacements, approveReplace, rejectReplace, policy, setPolicy,
   notePending, pendingHints, takePending, takeRecent, auditLog,
   noteProxied, unnoteProxied, isProxied, uiLang, setUiLang,
+  mcpAllows,
   sweep, sweepTmp, suggest, isExpired, fingerprint, detectKind, kindSource,
-  mintToken, redeemToken, materialize, redactor, healthCheck, lockDown
+  mintToken, redeemToken, materialize, redactor, healthCheck, lockDown,
+  recoveryEnable, recoveryDisable, recoveryStatus, recoveryRestore,
+  exportWrite, exportRefresh, exportStatus, exportForget, exportImport, exportInspect,
+  scanText,
+  listTrash, restoreTrashed, emptyTrash, purgeTrash, TRASH_DAYS
 };

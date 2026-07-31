@@ -7,8 +7,8 @@ Two tools in one VS Code extension:
 2. **Claude Vault**, an encrypted local secret store that Claude Code can use
    without ever seeing the values.
 
-The panel lives in the **secondary side bar** by default — on the right, next
-to the chat, like Claude Code itself — and mirrors to the left side bar with
+The panel lives in the **secondary side bar** by default, on the right, next
+to the chat, like Claude Code itself, and mirrors to the left side bar with
 one click, whichever you prefer.
 
 <!-- Absolute URLs on purpose: a relative image path renders on GitHub but breaks
@@ -24,15 +24,15 @@ one click, whichever you prefer.
       <img src="https://raw.githubusercontent.com/DarkHenos/claude-monitor-vault/main/media/screenshots/panel.png" alt="The panel: a progress bar per limit with its percentage and countdown, then the keys, in a single view" width="280">
     </td>
     <td valign="top">
-      <b>The panel.</b> One row per limit — session, week, and the per-model ones
-      when they apply — each with its bar, its percentage and the time left before
+      <b>The panel.</b> One row per limit, session, week, and the per-model ones
+      when they apply, each with its bar, its percentage and the time left before
       it resets. Underneath, the keys held in the vault: their name, their kind,
       their lifetime. Never their value.
       <br><br>
       <img src="https://raw.githubusercontent.com/DarkHenos/claude-monitor-vault/main/media/screenshots/badge.png" alt="The activity-bar icon carrying a numeric badge with the session percentage" width="40">
       <br>
       <b>The icon, wherever the panel is.</b> It never leaves the left edge and
-      carries the session percentage as a badge — the bare figure, since a VS Code
+      carries the session percentage as a badge, the bare figure, since a VS Code
       badge can only hold a number, with the “%” in the tooltip.
     </td>
   </tr>
@@ -42,14 +42,14 @@ one click, whichever you prefer.
 
 Every line this extension runs is public:
 **[github.com/DarkHenos/claude-monitor-vault](https://github.com/DarkHenos/claude-monitor-vault)**
-— the repository this very page links to. What you install is what you can read.
+the repository this very page links to. What you install is what you can read.
 
 - **No telemetry, no server of ours.** The only network call the extension ever
   makes is to Anthropic's official `api.anthropic.com/api/oauth/usage`
-  endpoint — the same one Claude Code's `/usage` command uses.
+  endpoint, the same one Claude Code's `/usage` command uses.
 - **Your secrets never leave your machine.** The vault is a local file,
   encrypted with a key sealed by your OS session. Nobody can read the values:
-  not the author of this extension, not Anthropic, and not Claude itself — by
+  not the author of this extension, not Anthropic, and not Claude itself, by
   construction, not by promise. The whole mechanism is documented below and
   auditable in the repository.
 - **MIT-licensed.** Audit it, fork it, build the `.vsix` yourself from source
@@ -65,17 +65,17 @@ language.
 - **Panel**, one row per limit (session, week, week Opus, week Sonnet), each
   with a progress bar, a percentage and a countdown to reset. Quotas on top,
   secrets below, in a single view. It opens in the **secondary side bar**, on the
-  right, next to the chat — like Claude Code itself — and the **mirror button**
+  right, next to the chat, like Claude Code itself, and the **mirror button**
   in its title bar sends it to the left side bar in one click, and back. The
   choice is remembered. Only one of the two sides is ever populated: the other
   container has no visible view, so VS Code hides its icon.
 - **Left icon, always.** The activity-bar icon never leaves the left edge,
   wherever the panel sits. It carries a numeric badge with the session
-  percentage — the bare figure on the icon, the "%" sign in the tooltip, since a
+  percentage, the bare figure on the icon, the "%" sign in the tooltip, since a
   VS Code badge can only carry a number.
   While the panel is on the right, that icon fronts a single collapsed line that
-  holds the summary in its title and the badge on the icon. It lists nothing —
-  the panel already shows the figures — and unfolding it just says where the
+  holds the summary in its title and the badge on the icon. It lists nothing,
+  the panel already shows the figures, and unfolding it just says where the
   panel went, with a link to bring it back.
 - **Status bar**, a compact figure such as `session: 8%`, with the week added on
   request, a coloured pill by default or the plain theme, on the left or the right.
@@ -256,8 +256,8 @@ the command transformed on its own (see the limits below).
 Every use, creation, replacement, expiry and revocation is recorded, with the key
 name and the time, **never the value**.
 
-Every entry also says **who acted**: *Claude* — through the bridge, the shell
-hook or an MCP proxy — or *you*, through a VS Code gesture. The log has a "By"
+Every entry also says **who acted**: *Claude*, through the bridge, the shell
+hook or an MCP proxy, or *you*, through a VS Code gesture. The log has a "By"
 column the text filter searches too, so typing `claude` shows only its actions.
 Each key additionally remembers **who authored its current value**, shown in its
 details: on an approved replacement that stays "Claude", since the approval is
@@ -288,7 +288,7 @@ investigate an incident, short enough that the file forgets on its own.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `claudeLimits.location` | secondarySidebar | where the panel lives: `secondarySidebar` (right, next to the chat) or `sidebar` (left) — the mirror button in the panel's title bar toggles it too |
+| `claudeLimits.location` | secondarySidebar | where the panel lives: `secondarySidebar` (right, next to the chat) or `sidebar` (left), the mirror button in the panel's title bar toggles it too |
 | `claudeLimits.pollSeconds` | 210 | seconds between API calls (minimum 120) |
 | `claudeLimits.alerts` | true | threshold notifications |
 | `claudeLimits.statusBar` | true | show usage in the status bar |
@@ -318,6 +318,6 @@ The extension is plain JavaScript with no runtime dependencies.
 
 ## License
 
-MIT — free for everyone, to use, modify and redistribute. The vault's promise
+MIT, free for everyone, to use, modify and redistribute. The vault's promise
 does not change with the license: your keys stay on your machine, and no one,
 Claude included, sees them.

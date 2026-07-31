@@ -196,6 +196,16 @@ function onSessionStart() {
         'Never ask the user for the value, they should not have to retype it. ' +
         'Each marker is single use: to use a key several times, write the marker again each ' +
         'time, never store the value in a variable and reuse it, and never loop over it. ' +
+        // Preference, not obligation. A command written the ordinary way still
+        // works, and a rule that breaks the tool it governs gets worked around.
+        // What this buys: a value substituted into a command line is visible in
+        // the machine\'s process list while it runs, and may land in shell
+        // history. In an environment block it is not.
+        'When a command needs a key for something long-running (a dev server, a watcher, ' +
+        'a container), prefer the vault terminal: ask the user to open it from the Claude ' +
+        'Vault view, or run the command through the launcher so the value travels in the ' +
+        'environment instead of the command line. For a one-off command, the marker in ' +
+        'the command line is fine and remains the normal way. ' +
         mcpLine + ' ' + listing
     }
   });

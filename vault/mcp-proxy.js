@@ -154,6 +154,13 @@ function substituteArguments(node, pairs, problems) {
       if (!s) { problems.push(name + ': unknown in the vault'); return full; }
       if (fileFlag) { problems.push(name + ': the file form does not make sense in an MCP call'); return full; }
       if (!s.mcp) { problems.push(name + ': not allowed for MCP calls (enable it in the Claude Vault view)'); return full; }
+      // Authorised, but maybe not here: a key scoped to one server must not
+      // leak into another server's tool call just because both are wrapped.
+      if (!vault.mcpAllows(s, serverName)) {
+        problems.push(name + ': allowed for MCP, but not for the server "' + serverName +
+          '" (its list: ' + s.mcpServers.join(', ') + ')');
+        return full;
+      }
       try {
         const v = vault.consume(name, 'mcp-proxy:' + serverName).value;
         pairs.push([name, v]);

@@ -576,6 +576,8 @@ function activate(context) {
       case 'del': return vscode.commands.executeCommand('claudeVault.delete', m.name);
       case 'ttl': return vscode.commands.executeCommand('claudeVault.setTtl', m.name);
       case 'copy': return vscode.commands.executeCommand('claudeVault.copyMarker', m.name);
+      case 'rename': return vscode.commands.executeCommand('claudeVault.rename', m.name);
+      case 'replace': return vscode.commands.executeCommand('claudeVault.replace', m.name);
       case 'info': return vscode.commands.executeCommand('claudeVault.details', m.name);
       case 'mcp': return vscode.commands.executeCommand('claudeVault.toggleMcp', m.name);
       case 'mcpserver': return vscode.commands.executeCommand('claudeVault.mcpSnippet', m.name);
@@ -583,6 +585,11 @@ function activate(context) {
       case 'actions': return vscode.commands.executeCommand('claudeVault.actions', m.name);
       case 'audit': return vscode.commands.executeCommand('claudeVault.audit');
       case 'connect': return vscode.commands.executeCommand('claudeVault.connect');
+      case 'settings': return vscode.commands.executeCommand('claudeVault.settings');
+      case 'recovery': return vscode.commands.executeCommand('claudeVault.recovery');
+      case 'public': return vscode.commands.executeCommand('claudeVault.togglePublic', m.name);
+      case 'terminal': return vscode.commands.executeCommand('claudeVault.terminal');
+      case 'confirm': return vscode.commands.executeCommand('claudeVault.toggleConfirm', m.name);
     }
   }
 
@@ -607,12 +614,63 @@ function activate(context) {
       pause: pause && pause > Date.now() ? pause : 0,
       // resetAt is sent already parsed: the webview no longer has a date to interpret
       rows: last ? last.rows.map(r => ({
-        label: r.label, short: r.short, pct: r.pct, level: r.level, resetAt: r.resetAt
+        label: r.label, short: r.short, pct: r.pct, level: r.level, resetAt: r.resetAt,
+        hitsAt: projectFull(r)
       })) : [],
       error: last ? last.error : null,
       at: last ? last.at : '',
       next: nextAt ? fmtTime(nextAt) : ''
     };
+  }
+
+  // ---- consumption projection
+  //
+  // The gauges say where you stand; they never say where you are heading. With
+  // a handful of samples the slope is enough to answer the only question that
+  // actually changes what you do next: does this run out before it resets?
+  //
+  // Deliberately conservative. It reports nothing unless the samples span a
+  // real stretch of time, the slope is genuinely rising, and the ceiling lands
+  // before the reset. A projection that cries wolf gets ignored, and then the
+  // one that mattered gets ignored too.
+  const HIST = Object.create(null);
+  const HIST_MAX = 40;
+  const HIST_MIN_SPAN = 900000;                    // 15 min of observation
+
+  function noteHistory(rows) {
+    const now = Date.now();
+    for (const r of rows || []) {
+      const h = HIST[r.short] || (HIST[r.short] = []);
+      // A drop means the window reset: what came before describes another
+      // period and would flatten the slope of this one.
+      if (h.length && r.pct < h[h.length - 1].pct - 0.5) h.length = 0;
+      h.push({ t: now, pct: r.pct });
+      if (h.length > HIST_MAX) h.shift();
+    }
+  }
+
+  function projectFull(r) {
+    const h = HIST[r.short];
+    if (!h || h.length < 3 || r.pct >= 100) return 0;
+    const span = h[h.length - 1].t - h[0].t;
+    if (span < HIST_MIN_SPAN) return 0;
+    // Least squares over the window: a single pair of points turns one burst
+    // of activity into a prediction, and every pause into a retraction.
+    let st = 0, sp = 0, stt = 0, stp = 0;
+    const n = h.length, t0 = h[0].t;
+    for (const p of h) {
+      const x = (p.t - t0) / 3600000;              // hours, so the slope reads as %/h
+      st += x; sp += p.pct; stt += x * x; stp += x * p.pct;
+    }
+    const denom = n * stt - st * st;
+    if (denom <= 0) return 0;
+    const slope = (n * stp - st * sp) / denom;
+    if (slope < 1) return 0;                       // under 1 %/h: not worth a claim
+    const at = Date.now() + ((100 - r.pct) / slope) * 3600000;
+    if (!isFinite(at)) return 0;
+    // If the window resets first, there is nothing to warn about.
+    if (isFinite(r.resetAt) && r.resetAt && at >= r.resetAt) return 0;
+    return Math.round(at);
   }
 
   // ---- alerts: evaluated once, by the window that made the call, and
@@ -759,6 +817,7 @@ function activate(context) {
     lastCacheAt = cache.at;
     last = { rows: rowsOfCache(cache), credits: creditsOfCache(cache),
              error: null, at: fmtTime(cache.at) };
+    noteHistory(last.rows);
     mergeAlerted(cache.alerted);
   }
 
@@ -796,6 +855,7 @@ function activate(context) {
       checkAlerts(rows);                       // before the write: fired thresholds go into the cache
       lastCacheAt = writeCache(rows, alerted, credits);
       last = { rows, credits, error: null, at: fmtTime(lastCacheAt) };
+      noteHistory(rows);
     } catch (e) {
       let msg;
       if (e && e.status === 429) {
@@ -999,6 +1059,21 @@ function panelStrings() {
     updateConn: t('Update the connection'),
     auditLog: t('Access log'),
     connection: t('Connection'),
+    settings: t('Settings'),
+    refreshNow: t('Refresh'),
+    vaultTerminal: t('Open a vault terminal'),
+    hitsAt: t('full ≈ {0}', '{0}'),
+    agoNow: t('just now'),
+    agoHours: t('{0} h ago', '{0}'),
+    agoDays: t('{0} d ago', '{0}'),
+    agoMonths: t('{0} mo ago', '{0}'),
+    agoYears: t('{0} y ago', '{0}'),
+    usedAgo: t('used {0}', '{0}'),
+    neverUsed: t('never used'),
+    staleHint: t('Created {0} and unused since: consider rotating it.', '{0}'),
+    recoTitle: t('Back up this vault'),
+    recoBody: t('A list of words, shown once, that reopens the vault if the master key is ever lost.'),
+    recoBtn: t('Create the backup key'),
     loading: t('loading…'),
     session5h: t('Session (5h)'),
     week: t('Week'),
@@ -1023,10 +1098,17 @@ function panelStrings() {
     dh: t('{0}d {1}h', '{0}', '{1}'),
     chars: t('{0} characters', '{0}'),
     rowHint: t('click, or right-click, for all actions'),
-    menuPrompt: t('What do you want to do?'),
     actCopy: t('Copy marker'),
     actDetails: t('Details'),
+    actRename: t('Rename'),
+    actReplace: t('Replace the value'),
     actTtl: t('Change expiry'),
+    actMarkPublic: t('Mark as public'),
+    actMarkSecret: t('Treat as a secret again'),
+    tagPublic: t('publishable value, not watched'),
+    actConfirmOn: t('Ask before every use'),
+    actConfirmOff: t('Stop asking before every use'),
+    tagConfirm: t('asks before every use'),
     actMcpServer: t('Use in an MCP server'),
     actMcpAllow: t('Allow for MCP'),
     actMcpRemove: t('Remove MCP authorisation'),
@@ -1117,11 +1199,26 @@ function getHtml(T) {
            font-size: 11.5px; font-weight: 600; letter-spacing: -.2px;
            overflow: hidden; white-space: nowrap; }
   .kname span { overflow: hidden; text-overflow: ellipsis; }
-  .tag { margin-left: auto; flex: 0 0 auto; font-family: var(--vscode-font-family);
+  /* The NAME takes the free space, so everything after it — ageing dot, tags,
+     chevron — sits on the right whatever the combination. Hanging the margin on
+     one of the markers meant the layout depended on which markers happened to
+     be present. */
+  .kname > span:first-child { flex: 1 1 auto; min-width: 0; }
+  .tag { flex: 0 0 auto; font-family: var(--vscode-font-family);
          font-size: 9px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase;
          padding: 0 4px; border-radius: 2px; opacity: .8;
          color: var(--vscode-charts-blue);
          border: 1px solid color-mix(in srgb, var(--vscode-charts-blue) 45%, transparent); }
+  /* A guarded key is the one thing on this row worth a warm colour. */
+  .tag.ask { color: var(--vscode-charts-yellow);
+             border-color: color-mix(in srgb, var(--vscode-charts-yellow) 45%, transparent); }
+  /* A published value is not an alert: grey, quieter than the MCP tag, which
+     marks something the user granted rather than something a service publishes. */
+  .tag.pub { color: var(--vscode-foreground); opacity: .45;
+             border-color: color-mix(in srgb, var(--vscode-foreground) 30%, transparent); }
+  /* Ageing marker: a dot, not a badge. It informs, it does not scold. */
+  .old { flex: 0 0 auto; font-style: normal; font-size: 13px; line-height: 0;
+         color: var(--vscode-charts-yellow); opacity: .55; }
   .chev { flex: 0 0 auto; opacity: 0; font-size: 10px; }
   .key:hover .chev { opacity: .45; }
   .kmeta { opacity: .5; font-size: 10.5px; margin: 2px 0 4px;
@@ -1176,12 +1273,33 @@ function getHtml(T) {
             color: var(--vscode-textLink-foreground); text-decoration: underline; }
   .notice.err { border-left-color: var(--vscode-charts-red);
             background: color-mix(in srgb, var(--vscode-charts-red) 9%, transparent); }
-  .foot { margin-top: 18px; font-size: 10px; opacity: .4; }
+  /* Sits just above the log, outside the scroller so it cannot be scrolled past.
+     Rounded and outlined rather than filled: it is an invitation, not an alarm —
+     the vault works perfectly well without a phrase. Gone once one exists. */
+  #reco { flex: 0 0 auto; margin: 0 10px 8px; padding: 9px 11px 10px;
+          border: 1px solid color-mix(in srgb, var(--vscode-textLink-foreground) 40%, transparent);
+          border-radius: 8px;
+          background: color-mix(in srgb, var(--vscode-textLink-foreground) 7%, transparent); }
+  #reco .rtitle { font-size: 11px; font-weight: 600; margin-bottom: 3px; }
+  #reco .rbody { font-size: 10.5px; opacity: .7; line-height: 1.45; }
+  #reco button { margin-top: 8px; appearance: none; border: 0; border-radius: 4px; cursor: pointer;
+          font-family: inherit; font-size: 11px; padding: 4px 10px;
+          background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+  #reco button:hover { background: var(--vscode-button-hoverBackground); }
+  #reco button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+  /* Pinned to the bottom edge, outside the scroller: the log and the connection
+     state are always one click away, whether the vault holds forty keys or none.
+     Appended to the key list, they sat wherever the list happened to end. */
+  #foot { flex: 0 0 auto; display: flex; align-items: center; font-size: 10px;
+            padding: 6px 12px 7px;
+            border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 11%, transparent);
+            background: var(--vscode-sideBar-background, transparent); }
   .foot button { appearance: none; border: 0; background: none; cursor: pointer; padding: 0;
-            font-family: inherit; font-size: 10px; color: inherit; text-decoration: underline; }
+            font-family: inherit; font-size: 10px; color: inherit; opacity: .55;
+            text-decoration: underline; }
   .foot button:hover { opacity: 1; }
   .foot button:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
-  .foot .dot { margin: 0 6px; opacity: .5; }
+  .foot .dot { margin: 0 6px; opacity: .35; }
   /* ---------- our own action dropdown, opened at the click ---------- */
   #kmenu { position: fixed; z-index: 1000; min-width: 226px; max-width: 320px;
            background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
@@ -1264,6 +1382,16 @@ function getHtml(T) {
   <div id="secrets"></div>
   </div>
 </div>
+<div id="reco" hidden>
+  <div class="rtitle">${esc(T.recoTitle)}</div>
+  <div class="rbody">${esc(T.recoBody)}</div>
+  <button data-act="recovery">${esc(T.recoBtn)}</button>
+</div>
+<div class="foot" id="foot">
+  <button data-act="audit">${esc(T.auditLog)}</button>
+  <span class="dot">·</span>
+  <button data-act="connect">${esc(T.connection)}</button>
+</div>
 <div id="kmenu" hidden role="menu"></div>
 <script nonce="${nonce}">
 (function () {
@@ -1283,7 +1411,7 @@ function getHtml(T) {
 
   // A single delegated listener for the whole panel: buttons created during
   // mounting don't need to be rewired on every render.
-  root.addEventListener('click', function (e) {
+  document.body.addEventListener('click', function (e) {
     var b = e.target.closest('[data-act]');
     if (!b) return;
     var host = b.closest('[data-name]');
@@ -1296,10 +1424,18 @@ function getHtml(T) {
   // Right click on a key opens the same dropdown, at the cursor.
   root.addEventListener('contextmenu', function (e) {
     var key = e.target.closest('.key[data-name]');
-    if (!key) return;
+    if (key) {
+      e.preventDefault();
+      var r = key.getBoundingClientRect();
+      openMenu(key.getAttribute('data-name'), e.clientX || r.left + 12, e.clientY || r.bottom);
+      return;
+    }
+    // Anywhere else in the vault column. Fields keep the native menu: without
+    // it there is no paste, and pasting is how a key value gets in.
+    if (e.target.closest('input, select, textarea, #quota')) return;
+    if (e.target !== root && !e.target.closest('#vaultcol')) return;
     e.preventDefault();
-    var r = key.getBoundingClientRect();
-    openMenu(key.getAttribute('data-name'), e.clientX || r.left + 12, e.clientY || r.bottom);
+    openPaneMenu(e.clientX, e.clientY);
   });
 
   // ---- our action dropdown, positioned at the click and clamped to the view.
@@ -1311,20 +1447,11 @@ function getHtml(T) {
     return null;
   }
   function closeMenu() { kmenu.hidden = true; kmenu.innerHTML = ''; }
-  function openMenu(name, x, y) {
-    var s = secretByName(name);
-    var marker = '{{vault' + (s && s.isFile ? '-file' : '') + ':' + name + '}}';
-    var items = [
-      { act: 'copy', label: T.actCopy, hint: marker },
-      { act: 'info', label: T.actDetails },
-      { act: 'ttl', label: T.actTtl },
-      { act: 'mcpserver', label: T.actMcpServer },
-      { act: 'mcp', label: (s && s.mcp) ? T.actMcpRemove : T.actMcpAllow },
-      { act: 'reveal', label: T.actReveal },
-      { sep: true },
-      { act: 'del', label: T.actDelete, danger: true }
-    ];
-    var html = '<div class="mtitle">' + esc(name) + (s ? ' · ' + esc(s.kind) : '') + '</div>';
+
+  // Both menus — a key's actions and the panel's own — share this renderer:
+  // same look, same clamping, same keyboard exit.
+  function showMenu(title, items, x, y, name) {
+    var html = title ? '<div class="mtitle">' + esc(title) + '</div>' : '';
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
       if (it.sep) { html += '<div class="msep"></div>'; continue; }
@@ -1336,19 +1463,55 @@ function getHtml(T) {
     kmenu.hidden = false;
     // Clamp to the viewport so it never spills off the edge.
     var w = kmenu.offsetWidth, h = kmenu.offsetHeight;
-    var px = Math.max(6, Math.min(x, window.innerWidth - w - 6));
-    var py = Math.max(6, Math.min(y, window.innerHeight - h - 6));
-    kmenu.style.left = px + 'px';
-    kmenu.style.top = py + 'px';
+    kmenu.style.left = Math.max(6, Math.min(x, window.innerWidth - w - 6)) + 'px';
+    kmenu.style.top = Math.max(6, Math.min(y, window.innerHeight - h - 6)) + 'px';
     var first = kmenu.querySelector('button');
     if (first) first.focus();
-    kmenu.__name = name;
+    kmenu.__name = name || null;
   }
+
+  function openMenu(name, x, y) {
+    var s = secretByName(name);
+    var marker = '{{vault' + (s && s.isFile ? '-file' : '') + ':' + name + '}}';
+    var items = [
+      { act: 'copy', label: T.actCopy, hint: marker },
+      { act: 'info', label: T.actDetails },
+      { act: 'rename', label: T.actRename, hint: name },
+      { act: 'replace', label: T.actReplace },
+      { act: 'ttl', label: T.actTtl },
+      { act: 'public', label: (s && s.pub) ? T.actMarkSecret : T.actMarkPublic },
+      { act: 'confirm', label: (s && s.confirm) ? T.actConfirmOff : T.actConfirmOn },
+      { act: 'mcpserver', label: T.actMcpServer },
+      { act: 'mcp', label: (s && s.mcp) ? T.actMcpRemove : T.actMcpAllow },
+      { act: 'reveal', label: T.actReveal },
+      { sep: true },
+      { act: 'del', label: T.actDelete, danger: true }
+    ];
+    showMenu(name + (s ? ' · ' + s.kind : ''), items, x, y, name);
+  }
+
+  // Right click on the background: the panel offers what it can do. No title
+  // above the list — the options say it themselves.
+  function openPaneMenu(x, y) {
+    showMenu(null, [
+      { act: '#newkey', label: T.newKey, hint: '+' },
+      { act: 'terminal', label: T.vaultTerminal },
+      { sep: true },
+      { act: 'audit', label: T.auditLog },
+      { act: 'connect', label: T.connection },
+      { act: 'settings', label: T.settings },
+      { act: 'refresh', label: T.refreshNow }
+    ], x, y, null);
+  }
+
   kmenu.addEventListener('click', function (e) {
     var b = e.target.closest('[data-mact]');
     if (!b) return;
-    api.postMessage({ type: b.getAttribute('data-mact'), name: kmenu.__name });
+    var act = b.getAttribute('data-mact'), name = kmenu.__name;
     closeMenu();
+    // '#' prefix: handled here, in the panel, with no round trip to the host.
+    if (act === '#newkey') { ouvrirForm(true); return; }
+    api.postMessage({ type: act, name: name });
   });
   document.addEventListener('click', function (e) {
     if (!kmenu.hidden && !kmenu.contains(e.target) && !e.target.closest('.key')) closeMenu();
@@ -1518,15 +1681,61 @@ function getHtml(T) {
 
   function levelOfLife(f) { return f > 0.35 ? 'ok' : (f > 0.12 ? 'warn' : 'crit'); }
 
+  // A projection lands at a moment, so it reads as a clock time. Beyond today
+  // the hour alone would be ambiguous, so the date joins it.
+  function clockOf(ts) {
+    var d = new Date(ts);
+    var hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    var now = new Date();
+    if (d.getDate() === now.getDate() && d.getMonth() === now.getMonth()) return hm;
+    return String(d.getDate()).padStart(2, '0') + '/' +
+           String(d.getMonth() + 1).padStart(2, '0') + ' ' + hm;
+  }
+
+  // Rounded to the unit that carries meaning at that distance: nobody needs
+  // "il y a 47 jours", they need "il y a 2 mois".
+  function agoText(ts) {
+    var d = Date.now() - ts;
+    if (d < 3600000) return T.agoNow;
+    if (d < 86400000) return fmt(T.agoHours, Math.round(d / 3600000));
+    if (d < 2592000000) return fmt(T.agoDays, Math.round(d / 86400000));
+    if (d < 31536000000) return fmt(T.agoMonths, Math.max(1, Math.round(d / 2592000000)));
+    return fmt(T.agoYears, Math.max(1, Math.round(d / 31536000000)));
+  }
+
+  // Never used and old enough to have been: worth saying so plainly. A key
+  // sitting unused for months is either forgotten or already dead upstream —
+  // and finding that out from a 401 in production is the expensive way.
+  var STALE_MS = 15552000000;                   // six months
+
+  function usageText(s) {
+    if (s.lastUsedAt) return fmt(T.usedAgo, agoText(s.lastUsedAt));
+    if (s.createdAt && Date.now() - s.createdAt > 604800000) return T.neverUsed;
+    return null;
+  }
+
   function metaOf(s) {
+    var head;
     if (s.maxUses) {
       var left = Math.max(0, s.maxUses - s.uses);
-      return s.kind + ' · ' + (left <= 1 ? T.burnsNext : fmt(T.usesLeft, left)) +
-             (s.mcp ? ' · MCP' : '');
+      head = s.kind + ' · ' + (left <= 1 ? T.burnsNext : fmt(T.usesLeft, left));
+    } else {
+      var l = lifeOf(s);
+      head = s.kind + ' · ' + (l ? fmtLeft(l.left) : T.neverExpires);
     }
-    var l = lifeOf(s);
-    return s.kind + ' · ' + (l ? fmtLeft(l.left) : T.neverExpires) +
-           (s.mcp ? ' · MCP' : '');
+    if (s.mcp) head += ' · MCP';
+    var use = usageText(s);
+    if (use) head += ' · ' + use;
+    return head;
+  }
+
+  // Old and untouched: a discreet marker, no colour, no alarm. Rotating is a
+  // decision, not an emergency.
+  function staleOf(s) {
+    if (!s.createdAt || Date.now() - s.createdAt < STALE_MS) return null;
+    var since = s.lastUsedAt || s.createdAt;
+    if (Date.now() - since < STALE_MS) return null;
+    return fmt(T.staleHint, agoText(s.createdAt));
   }
 
   // Structure signature: as long as it doesn't change, we update the DOM in
@@ -1538,10 +1747,13 @@ function getHtml(T) {
     var k = d.rows.length ? 'q:' : 'q0:' + (d.error ? 1 : 0) + ':';
     for (var i = 0; i < d.rows.length; i++) k += d.rows[i].short + ',';
     var v = d.vault || { secrets: [] };
-    k += '|s:' + (v.connected ? 1 : 0) + (v.needsUpdate ? 1 : 0) + ':' + (v.issues || []).length + ':';
+    k += '|s:' + (v.connected ? 1 : 0) + (v.needsUpdate ? 1 : 0) +
+         (v.recovery ? 1 : 0) + ':' + (v.issues || []).length + ':';
     for (var j = 0; j < v.secrets.length; j++) {
       k += v.secrets[j].name + (v.secrets[j].maxUses ? '#' : (v.secrets[j].expiresAt ? '@' : '-')) +
-           (v.secrets[j].mcp ? '+' : '') + ',';
+           (v.secrets[j].mcp ? '+' : '') + (v.secrets[j].pub ? 'P' : '') +
+           (v.secrets[j].confirm ? 'C' : '') +
+           (staleOf(v.secrets[j]) ? '!' : '') + ',';
     }
     return k;
   }
@@ -1588,8 +1800,11 @@ function getHtml(T) {
              esc(s.kind + ' · ' + s.hint + ' · ' + fmt(T.chars, s.length) +
                  ' · ' + T.rowHint) + '">' +
            '<div class="kname"><span>' + esc(s.name) + '</span>' +
+             (staleOf(s) ? '<em class="old" title="' + esc(staleOf(s)) + '">•</em>' : '') +
+             (s.pub ? '<em class="tag pub" title="' + esc(T.tagPublic) + '">pub</em>' : '') +
+             (s.confirm ? '<em class="tag ask" title="' + esc(T.tagConfirm) + '">ask</em>' : '') +
              (s.mcp ? '<em class="tag">mcp</em>' : '') +
-             '<span class="chev"' + (s.mcp ? ' style="margin-left:0"' : ' style="margin-left:auto"') + '>›</span>' +
+             '<span class="chev">›</span>' +
            '</div>' +
            '<div class="kmeta"></div>';
       if (s.maxUses) {
@@ -1604,8 +1819,7 @@ function getHtml(T) {
       // With no expiry and no use counter: no bar at all. The absence is the signal.
       h += '</button>';
     }
-    return h + '<div class="foot"><button data-act="audit">' + esc(T.auditLog) + '</button>' +
-           '<span class="dot">·</span><button data-act="connect">' + esc(T.connection) + '</button></div>';
+    return h;
   }
 
   // The header is static: we only ever update the counter and the alert dot
@@ -1613,6 +1827,10 @@ function getHtml(T) {
   function updateSection(v) {
     var cnt = document.getElementById('cnt');
     var dot = document.getElementById('dotw');
+    // Nothing to back up while the vault is empty, and nothing to offer once
+    // a phrase exists: the box only shows where it would actually help.
+    var reco = document.getElementById('reco');
+    if (reco) reco.hidden = !v || !v.secrets.length || v.recovery !== false;
     if (!v) { cnt.textContent = ''; dot.hidden = true; return; }
     var soon = 0;
     for (var i = 0; i < v.secrets.length; i++) {
@@ -1735,7 +1953,8 @@ function getHtml(T) {
         var w = Math.min(r.pct, 100) + '%';
         if (refs.fill[i].style.width !== w) refs.fill[i].style.width = w;
         refs.bar[i].setAttribute('aria-valuenow', p);
-        setText(refs.eta[i], etaText(r.resetAt));
+        setText(refs.eta[i], etaText(r.resetAt) +
+          (r.hitsAt ? ' · ' + fmt(T.hitsAt, clockOf(r.hitsAt)) : ''));
       }
       if (refs.err) {
         refs.err.hidden = !d.error;

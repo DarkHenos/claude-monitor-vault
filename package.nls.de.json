@@ -20,7 +20,7 @@
   "cmd.vault.audit": "Zugriffsprotokoll",
   "cmd.vault.connect": "Mit Claude Code verbinden",
   "cmd.vault.disconnect": "Verbindung zu Claude Code trennen",
-  "cfg.autoConnect": "Claude Code beim Start der Erweiterung automatisch anbinden: Hooks installiert, lokale MCP-Server über den Tresor-Proxy geleitet. Ausgeschaltet bleibt Claude Code unberührt, bis Verbinden selbst gedrückt wird — dann bei jedem Start erneut.",
+  "cfg.autoConnect": "Claude Code beim Start der Erweiterung automatisch anbinden: Hooks installiert, lokale MCP-Server über den Tresor-Proxy geleitet. Ausgeschaltet bleibt Claude Code unberührt, bis Verbinden selbst gedrückt wird, dann bei jedem Start erneut.",
   "cmd.vault.revokeAll": "Alles widerrufen",
   "cfg.pollSeconds": "Sekunden zwischen API-Aufrufen. Ein gemeinsamer Cache über alle VS Code-Fenster: eine echte Anfrage versorgt alle.",
   "cfg.alerts": "Benachrichtigen, wenn die 5-Stunden-Sitzung 80 % und dann 95 % erreicht und das Wochenlimit 90 %.",
@@ -38,5 +38,16 @@
   "cfg.location": "Wo das Panel lebt: in der sekundären Seitenleiste rechts, neben dem Chat, oder in der Aktivitätsleiste links. Die Spiegel-Schaltfläche in der Titelleiste wechselt die Seite ebenfalls.",
   "cmd.moveToSecondary": "Neben den Chat verschieben",
   "cmd.moveToPrimary": "Zurück in die linke Seitenleiste",
-  "welcome.movedRight": "Das Panel liegt neben dem Chat.\n[Zurück nach links holen](command:claudeLimits.moveToPrimary)"
+  "welcome.movedRight": "Das Panel liegt neben dem Chat.\n[Zurück nach links holen](command:claudeLimits.moveToPrimary)",
+  "cmd.vault.recovery": "Sicherungsschlüssel erstellen",
+  "cmd.vault.recoveryRestore": "Mit einer Phrase wiederherstellen",
+  "cmd.vault.trash": "Papierkorb öffnen",
+  "cmd.vault.rename": "Schlüssel umbenennen",
+  "cmd.vault.replace": "Wert ersetzen",
+  "cmd.vault.export": "Exportdatei erstellen",
+  "cmd.vault.import": "Aus einer Datei wiederherstellen",
+  "cmd.vault.togglePublic": "Öffentlich oder geheim",
+  "cmd.vault.terminal": "Tresor-Terminal öffnen",
+  "cmd.vault.checkCommit": "Prüfen, was für den Commit vorgemerkt ist",
+  "cmd.vault.toggleConfirm": "Vor jeder Verwendung fragen"
 }

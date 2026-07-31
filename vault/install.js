@@ -26,7 +26,13 @@ const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.cl
 const BRIDGE_DIR = path.join(CLAUDE_DIR, 'claude-vault-bridge');
 const SETTINGS = path.join(CLAUDE_DIR, 'settings.json');
 const MARKER = 'claude-vault-bridge';     // lets us find OUR entries
-const FILES = ['core.js', 'hook.js', 'get.js', 'list.js', 'add.js', 'env.js', 'mcp-proxy.js'];
+// Every file the bridge needs, dependencies included: core.js requires
+// wordlist.js at load time, so leaving it out here does not degrade the
+// recovery phrase — it stops core.js from loading at all, and with it every
+// hook, every marker and every MCP call. tests/bridge-files.js keeps this
+// list honest by walking the requires.
+const FILES = ['core.js', 'wordlist.js', 'hook.js', 'get.js', 'list.js',
+               'add.js', 'env.js', 'mcp-proxy.js'];
 const SHIMS = { win32: 'node-shim.cmd', posix: 'node-shim.sh' };
 const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse'];
 
@@ -335,8 +341,26 @@ function status(version) {
   };
 }
 
+// Every MCP server name Claude Code knows about, global and per project. Used
+// by the UI to offer a choice instead of asking the user to type names from
+// memory — and a typo there silently means "no server at all".
+function serverNames() {
+  const config = readJson(CLAUDE_JSON, {});
+  const out = new Set();
+  const visit = servers => {
+    if (servers && typeof servers === 'object') for (const k of Object.keys(servers)) out.add(k);
+  };
+  visit(config.mcpServers);
+  if (config.projects && typeof config.projects === 'object') {
+    for (const p of Object.keys(config.projects)) {
+      if (config.projects[p]) visit(config.projects[p].mcpServers);
+    }
+  }
+  return Array.from(out).sort();
+}
+
 module.exports = {
-  install, uninstall, status, BRIDGE_DIR, SETTINGS, EVENTS,
+  install, uninstall, status, BRIDGE_DIR, SETTINGS, EVENTS, serverNames,
   wrapServers, unwrapServers, wrapMcpServers, unwrapMcpServers, CLAUDE_JSON, WRAP_MARK,
   nodeExec
 };
