@@ -65,9 +65,10 @@ Requires **VS Code 1.106** or newer. Plain JavaScript, no runtime dependencies.
    curl -H "Authorization: Bearer {{vault:GITHUB_TOKEN}}" https://api.github.com/user/repos
    ```
 
-4. Press **Create the backup key** in the box above the access log, write down
-   the 17 words, then set an export file. Without those two, a lost master key
-   is a lost vault.
+4. A backup file is created for you at first launch and follows the vault from
+   then on. Press **Create the backup key** in the box above the access log and
+   write down the 17 words: that is what makes the backup openable on another
+   machine, and what brings the vault back if this one loses its master key.
 
 ## Usage monitor
 
@@ -131,17 +132,21 @@ machine. Two things make it survivable:
 - **Recovery phrase.** 17 words, shown once and stored nowhere, that unlock a
   copy of the master key. Needed if the OS secret store is ever lost: a wiped
   profile, a reinstalled system, a rebuilt account.
-- **Export file** (`.cvault`). One encrypted file, names included, refreshed on
-  its own at every change. Keep it somewhere other than this machine.
+- **Backup file** (`.cvault`). One encrypted file holding the whole vault: the
+  keys, the access log, the bin and your settings. It is created on first launch
+  and rewritten at every change, so it is never out of date. Move it wherever
+  you like, the new location is remembered.
+
+The two work together. This machine can always open the backup file, which
+covers a deleted or corrupted vault. Once a recovery phrase exists, the same
+file also opens on **any** machine, which is what a dead disk or a new computer
+actually needs. Keep a copy somewhere other than this machine.
 
 Moving to a new computer is the file plus the words:
 
 ```
 Ctrl+Shift+P  >  Claude Vault: Restore from a file
 ```
-
-The export option stays disabled until a recovery phrase exists, because without
-one the file could only ever be opened on the machine that wrote it.
 
 ### Deleting, renaming, replacing
 
@@ -292,7 +297,7 @@ limits**.
 | Command | What it does |
 |---|---|
 | Open a vault terminal | a terminal whose environment holds the chosen keys |
-| Create the export file | one encrypted file, kept up to date on its own |
+| Create the backup file | one encrypted file, kept up to date on its own |
 | Restore from a file | bring a vault in, on this machine or a new one |
 | Create the backup key | generate the 17-word recovery phrase |
 | Recover with a phrase | reopen the vault when the OS secret store is lost |

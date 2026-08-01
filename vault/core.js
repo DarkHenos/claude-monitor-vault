@@ -449,10 +449,16 @@ function exportKey(master) {
 
 // Refusing without a phrase is not pedantry: a file nobody can open anywhere
 // else is a copy of the problem, not a solution to it.
+// Written whether or not a recovery phrase exists, because the two things it
+// does are not the same thing. Without a phrase it is still a backup: this
+// machine's own key opens it, and it covers the accident that actually happens,
+// a vault deleted or corrupted. With a phrase it also becomes portable, and the
+// envelope simply appears in it at the next refresh. Refusing to write anything
+// until the phrase existed left people with no net at all in the meantime.
 function exportBuild() {
-  let env;
+  let env = null;
   try { env = JSON.parse(fs.readFileSync(RECOVERY_PATH, 'utf8')); }
-  catch (e) { throw fail('set up the recovery phrase first: without it this file could only be opened on this machine'); }
+  catch (e) { /* no phrase yet: the file stays local to this machine */ }
 
   const master = masterKey();
   const v = loadRaw();
@@ -484,7 +490,7 @@ function exportBuild() {
   return JSON.stringify({
     magic: EXPORT_MAGIC, v: EXPORT_VERSION, at: Date.now(),
     count: Object.keys(v.secrets).length,
-    recovery: env,
+    recovery: env,                      // absent: readable on this machine only
     iv: b64(iv), tag: b64(c.getAuthTag()), ct: b64(ct)
   });
 }
@@ -510,7 +516,12 @@ function exportRefresh() {
 
 function exportStatus() {
   const p = policy();
-  const st = { path: p.exportPath || null, at: p.exportAt || null, present: false, at_file: null };
+  const st = {
+    path: p.exportPath || null, at: p.exportAt || null, present: false, at_file: null,
+    // Portable means: the file carries the envelope, so the phrase opens it
+    // anywhere. Without it the file is still a backup, readable here.
+    portable: fs.existsSync(RECOVERY_PATH)
+  };
   if (!st.path) return st;
   try {
     const s = fs.statSync(st.path);
@@ -518,6 +529,28 @@ function exportStatus() {
     st.at_file = s.mtimeMs;
   } catch (e) { /* moved, unplugged, deleted */ }
   return st;
+}
+
+// Called at startup. A safety net nobody switched on protects nobody, so the
+// file exists from the first launch, at a place the user can see and move.
+// Never throws: a vault that cannot write its backup still has to open.
+const DEFAULT_EXPORT = 'claude-vault-backup.' + 'cvault';
+
+function exportEnsure() {
+  try {
+    const p = policy();
+    if (p.exportPath) {
+      if (fs.existsSync(p.exportPath)) return { created: false, path: p.exportPath };
+      // Configured but gone: the drive was unplugged, or someone tidied up.
+      // Writing it again where it was told to is the least surprising answer.
+      exportRefresh();
+      return { created: false, path: p.exportPath, rewritten: true };
+    }
+    if (!fs.existsSync(VAULT_PATH)) return { created: false, path: null };
+    const target = path.join(os.homedir(), DEFAULT_EXPORT);
+    exportWrite(target);
+    return { created: true, path: target };
+  } catch (e) { return { created: false, path: null, error: e.message }; }
 }
 
 function exportForget() {
@@ -546,6 +579,7 @@ function exportInspect(text) {
   try { here = listFast().length; } catch (e) { /* no vault yet */ }
   return {
     count: Number(f.count) || 0, at: Number(f.at) || 0, opensLocally: local,
+    portable: !!(f.recovery && f.recovery.ct),
     here, survives: local          // same key here: the replaced keys can be binned
   };
 }
@@ -572,10 +606,15 @@ function exportImport(text, phrase) {
   // 2. otherwise the words, which also reinstate the key locally
   if (!master) {
     mode = 'phrase';
+    const r = f.recovery;
+    // A file written before its owner had a phrase is a backup, not an export:
+    // it only ever opens on the machine that wrote it, and saying so is more
+    // use than asking for words that would not have helped.
+    if (!r || !r.salt || !r.iv || !r.tag || !r.ct) {
+      throw fail('this file was written as a backup on another machine, with no recovery phrase: nothing can open it here');
+    }
     if (!phrase) throw fail('this export was written by another machine: enter its recovery phrase');
     const entropy = phraseDecode(phrase);
-    const r = f.recovery;
-    if (!r || !r.salt || !r.iv || !r.tag || !r.ct) throw fail('this export carries no recovery envelope');
     const rk = recoveryKey(entropy, unb64(r.salt));
     const d = crypto.createDecipheriv('aes-256-gcm', rk, unb64(r.iv));
     d.setAAD(Buffer.from(RECOVERY_INFO, 'utf8'));
@@ -2200,6 +2239,7 @@ module.exports = {
   mintToken, redeemToken, materialize, redactor, healthCheck, lockDown,
   recoveryEnable, recoveryDisable, recoveryStatus, recoveryRestore,
   exportWrite, exportRefresh, exportStatus, exportForget, exportImport, exportInspect,
+  exportEnsure,
   scanText,
   listTrash, restoreTrashed, emptyTrash, purgeTrash, TRASH_DAYS
 };

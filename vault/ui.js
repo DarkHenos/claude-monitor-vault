@@ -1019,20 +1019,23 @@ function activateVault(context, version, onChange) {
 </div>
 
 <div class="sect">
-<h2>${esc(t('Export file'))}</h2>
-<div class="etat${exp.path ? '' : ' ko'}">
-  ${esc(!rec.enabled
-    ? t('Create your recovery phrase first: it is what opens the export file.')
-    : (exp.path
-        ? (exp.present
-            ? t('Up to date, {0}', whenText(exp.at || exp.at_file))
-            : t('File not found where it was left: it stopped being updated.'))
-        : t('No export file yet.')))}
+<h2>${esc(t('Backup file'))}</h2>
+<div class="etat${exp.path && exp.present ? '' : ' ko'}">
+  ${esc(!exp.path
+    ? t('No backup file yet.')
+    : (!exp.present
+        ? t('File not found where it was left: it stopped being updated.')
+        : (exp.portable
+            ? t('Up to date, {0}. Portable: your recovery phrase opens it anywhere.',
+                whenText(exp.at || exp.at_file))
+            : t('Up to date, {0}. This machine only, until you create a recovery phrase.',
+                whenText(exp.at || exp.at_file)))))}
 </div>
 ${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
-<div class="desc">${esc(t('One encrypted file holding your whole vault, refreshed on its own at every change. Keep it somewhere other than this machine: a disk that dies takes the vault and everything beside it. Your recovery phrase opens it on any machine, which is all it takes to move to a new computer.'))}</div>
+<div class="desc">${esc(t('A single encrypted file holding your whole vault: the keys, the access log, the bin and your settings. It is created automatically and rewritten at every change, so it is never out of date.'))}</div>
+<div class="desc">${esc(t('This machine can always open it, which covers a deleted or corrupted vault. Add a recovery phrase and it opens on any machine, which is what you need when a disk dies or when you move to a new computer. Keep a copy somewhere other than this machine.'))}</div>
 <div class="actions">
-  <button class="doux" id="expnew"${rec.enabled ? '' : ' disabled'}>${esc(exp.path ? t('Change location') : t('Create the export file'))}</button>
+  <button class="doux" id="expnew">${esc(exp.path ? t('Change location') : t('Create the backup file'))}</button>
   ${exp.path ? '<button class="doux" id="expoff">' + esc(t('Stop updating')) + '</button>' : ''}
   <button class="doux" id="expimp">${esc(t('Restore from a file'))}</button>
 </div>
@@ -1628,23 +1631,19 @@ ${entries.length
   }
 
   async function exportChoose() {
-    if (!vault.recoveryStatus().enabled) {
-      return vscode.window.showWarningMessage(
-        t('Create your recovery phrase first: it is what opens the export file.'));
-    }
     const os = require('os');
+    const now = vault.exportStatus();
     const target = await vscode.window.showSaveDialog({
-      defaultUri: vscode.Uri.file(path.join(os.homedir(), 'claude-vault.' + EXPORT_EXT)),
+      defaultUri: vscode.Uri.file(now.path || path.join(os.homedir(), 'claude-vault-backup.' + EXPORT_EXT)),
       filters: { 'Claude Vault': [EXPORT_EXT] },
-      saveLabel: t('Create the export file')
+      saveLabel: t('Save the backup file here')
     });
     if (!target) return;
     try {
       vault.exportWrite(target.fsPath);
       notify();
       vscode.window.showInformationMessage(
-        t('Export created: {0}. It is refreshed on its own at every change. Keep it somewhere other than this machine.',
-          target.fsPath));
+        t('Backup file moved to {0}. It is rewritten at every change.', target.fsPath));
     } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
   }
 
@@ -1808,6 +1807,17 @@ ${entries.length
       [{ scheme: 'file' }, { scheme: 'untitled' }, { scheme: 'vscode-userdata' }],
       markerProvider(), '{', ':'));
   } catch (e) { /* no completion API: the panel and the commands still work */ }
+
+  // The backup exists from the first launch. A safety net someone has to switch
+  // on is a safety net most people never switch on, and this one is the answer
+  // to the accident this whole release was written for.
+  try {
+    const e = vault.exportEnsure();
+    if (e.created) {
+      vscode.window.showInformationMessage(
+        t('A backup file was created at {0}. It follows the vault at every change. Keep a copy somewhere other than this machine.', e.path));
+    }
+  } catch (e) { /* read-only home: the vault still works */ }
 
   // Same rule as the completion provider, learned the same way: a watcher that
   // fails to register must not take the vault down with it.

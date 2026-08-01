@@ -12,11 +12,13 @@ from 1.0.0 onwards.
 
 - Recovery phrase: 17 words, shown once and stored nowhere, that unlock a copy
   of the master key when the OS secret store is lost.
-- Encrypted export file (`.cvault`), refreshed automatically at every change,
-  opened by the recovery phrase on any machine. It carries the whole vault, not
-  just the keys: the access log, the bin, the settings, the defaults for new
-  keys and the interface language. The export path itself is left out, since it
-  names a folder on the machine that wrote the file.
+- Encrypted backup file (`.cvault`), created at first launch and rewritten at
+  every change. It carries the whole vault, not just the keys: the access log,
+  the bin, the settings, the defaults for new keys and the interface language.
+  This machine can always open it, which covers a deleted or corrupted vault;
+  with a recovery phrase it opens on any machine, which is what a dead disk or a
+  new computer needs. Its own location is left out of it, since that names a
+  folder on the machine that wrote the file.
 - Import of an export file, with or without the phrase depending on the machine.
 - Bin: a deleted key is kept encrypted for 30 days and restored in one click.
 - Key renaming, with spaces and accents normalised.
