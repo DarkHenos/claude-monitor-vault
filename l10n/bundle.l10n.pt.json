@@ -446,5 +446,12 @@
   "{0} needs your confirmation for every use, and it was not given": "{0} exige a tua confirmação em cada utilização, e não foi dada",
   "{0} came back as {1}, since the name was taken again. Update any marker that points at it.": "{0} voltou como {1}, porque o nome estava novamente ocupado. Atualiza os marcadores que apontam para ela.",
   "the vault moved while this operation was in flight ({0} behind {1}): nothing was written": "o cofre mudou enquanto esta operacao decorria ({0} atras de {1}): nada foi escrito",
-  "no free name left for {0}": "nao resta nenhum nome livre para {0}"
+  "no free name left for {0}": "nao resta nenhum nome livre para {0}",
+  "Nothing is in the vault on this machine yet.": "Ainda nao ha nada no cofre desta maquina.",
+  "The {0} key(s) currently here leave the vault and wait {1} days in the bin, so this can be undone.": "As {0} chave(s) que estao agora aqui saem do cofre e aguardam {1} dias no lixo, por isso e reversivel.",
+  "The {0} key(s) currently here are sealed with this machine's key, and this file replaces that key. They become unreadable, permanently, and the bin cannot hold them.": "As {0} chave(s) que estao agora aqui estao seladas com a chave desta maquina, e este ficheiro substitui-a. Ficam ilegiveis, definitivamente, e o lixo nao as pode reter.",
+  "Save this vault first": "Guardar primeiro este cofre",
+  "Exported {0}.": "Exportado a {0}.",
+  "Current vault saved. Run the restore again to bring the other one in.": "Cofre atual guardado. Executa a restauracao de novo para trazer o outro.",
+  "The {0} previous one(s) are in the bin.": "As {0} anteriores estao no lixo."
 }

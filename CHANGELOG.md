@@ -20,6 +20,11 @@ snapshot, no copy, no second door. The values were gone for good.
   never seen it. Moving to a new machine is the file plus the words. The option
   stays disabled until a recovery phrase exists, because without one the file
   could only ever be opened on the machine that wrote it.
+  Restoring says what becomes of the keys already there, and the answer is not
+  the same in both cases. On this machine the master key does not move, so they
+  go to the bin and the import can be undone. From another machine that key is
+  replaced, so they become unreadable for good: the dialog says so before it
+  happens, and offers to save the current vault first.
 - **A bin.** A deleted key waits thirty days, still encrypted, invisible to
   Claude, and comes back in one click. There is an **Undo** right on the
   confirmation. An expired key does not go there: an expiry is an instruction

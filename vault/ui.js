@@ -1672,15 +1672,33 @@ ${entries.length
     try { info = vault.exportInspect(text); }
     catch (e) { return vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
 
-    const here = vault.listFast().length;
+    // What happens to the keys already here depends on whether the master key
+    // moves. Saying "replaced" for both cases would have been true and useless.
+    let quoi;
+    if (!info.here) {
+      quoi = t('Nothing is in the vault on this machine yet.');
+    } else if (info.survives) {
+      quoi = t('The {0} key(s) currently here leave the vault and wait {1} days in the bin, so this can be undone.',
+        String(info.here), String(vault.TRASH_DAYS));
+    } else {
+      quoi = t('The {0} key(s) currently here are sealed with this machine\'s key, and this file replaces that key. They become unreadable, permanently, and the bin cannot hold them.',
+        String(info.here));
+    }
+
     const go = t('Restore this vault');
+    const saveFirst = t('Save this vault first');
+    const boutons = (info.here && !info.survives) ? [saveFirst, go] : [go];
     const yes = await vscode.window.showWarningMessage(
       t('Restore {0} key(s) from this file?', String(info.count)),
       { modal: true,
-        detail: t('Exported {0}. The {1} key(s) currently on this machine are replaced.',
-          whenText(info.at), String(here)) +
+        detail: t('Exported {0}.', whenText(info.at)) + '\n\n' + quoi +
           (info.opensLocally ? '' : '\n\n' + t('This file comes from another machine: its phrase will be asked for.')) },
-      go);
+      ...boutons);
+    if (yes === saveFirst) {
+      await exportChoose();
+      return vscode.window.showInformationMessage(
+        t('Current vault saved. Run the restore again to bring the other one in.'));
+    }
     if (yes !== go) return;
 
     let phrase = null;
@@ -1698,7 +1716,8 @@ ${entries.length
       sessionKeys.clear();
       notify();
       vscode.window.showInformationMessage(
-        t('Vault restored from the file: {0} key(s).', String(r.secrets)));
+        t('Vault restored from the file: {0} key(s).', String(r.secrets)) +
+        (r.binned ? ' ' + t('The {0} previous one(s) are in the bin.', String(r.binned)) : ''));
     } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
   }
 

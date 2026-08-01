@@ -446,5 +446,12 @@
   "{0} needs your confirmation for every use, and it was not given": "{0} exige tu confirmación en cada uso, y no se dio",
   "{0} came back as {1}, since the name was taken again. Update any marker that points at it.": "{0} ha vuelto como {1}, porque su nombre estaba ocupado de nuevo. Actualiza los marcadores que la señalan.",
   "the vault moved while this operation was in flight ({0} behind {1}): nothing was written": "la caja fuerte cambio mientras esta operacion estaba en curso ({0} por detras de {1}): no se escribio nada",
-  "no free name left for {0}": "no queda ningun nombre libre para {0}"
+  "no free name left for {0}": "no queda ningun nombre libre para {0}",
+  "Nothing is in the vault on this machine yet.": "Todavia no hay nada en la caja fuerte de esta maquina.",
+  "The {0} key(s) currently here leave the vault and wait {1} days in the bin, so this can be undone.": "Las {0} clave(s) que hay ahora aqui salen de la caja fuerte y esperan {1} dias en la papelera, asi que se puede deshacer.",
+  "The {0} key(s) currently here are sealed with this machine's key, and this file replaces that key. They become unreadable, permanently, and the bin cannot hold them.": "Las {0} clave(s) que hay ahora aqui estan selladas con la clave de esta maquina, y este archivo la sustituye. Quedan ilegibles, definitivamente, y la papelera no puede retenerlas.",
+  "Save this vault first": "Guardar primero esta caja fuerte",
+  "Exported {0}.": "Exportado el {0}.",
+  "Current vault saved. Run the restore again to bring the other one in.": "Caja fuerte actual guardada. Vuelve a lanzar la restauracion para traer la otra.",
+  "The {0} previous one(s) are in the bin.": "Las {0} anteriores estan en la papelera."
 }

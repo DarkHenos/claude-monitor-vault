@@ -527,7 +527,14 @@ function exportInspect(text) {
   }
   let local = false;
   try { local = exportOpens(f, masterKey()); } catch (e) { /* no local key */ }
-  return { count: Number(f.count) || 0, at: Number(f.at) || 0, opensLocally: local };
+  // What the caller needs to warn about BEFORE anything is written: how many
+  // keys are here now, and whether they would survive.
+  let here = 0;
+  try { here = listFast().length; } catch (e) { /* no vault yet */ }
+  return {
+    count: Number(f.count) || 0, at: Number(f.at) || 0, opensLocally: local,
+    here, survives: local          // same key here: the replaced keys can be binned
+  };
 }
 
 // phrase is optional: on the machine that wrote the file, the local master key
@@ -572,6 +579,22 @@ function exportImport(text, phrase) {
   const data = exportOpen(f, master);
   if (!data || !data.secrets) throw fail('this export holds no vault');
 
+  // What is here now is about to be overwritten. On this machine the master key
+  // does not move, so those entries stay decryptable and the bin can hold them
+  // for thirty days: an import stops being a one way door.
+  //
+  // After a phrase import it is a different key, and entries sealed under the
+  // old one would sit in the bin as noise nobody could ever open. So they are
+  // NOT binned, and exportImport reports how many were lost so the caller can
+  // say so before it happens rather than after.
+  let binned = 0, lost = 0;
+  try {
+    const old = loadRaw();
+    const entries = Object.keys(old.secrets || {}).map(id => old.secrets[id]);
+    if (mode === 'local') binned = trashPutMany(entries);
+    else lost = entries.length;
+  } catch (e) { /* unreadable vault: there was nothing to save anyway */ }
+
   // The counter only ever moves forward. A vault brought back verbatim looks
   // exactly like the replay this counter exists to catch.
   const seq = Math.max(currentSeq(), Number(data.seq) || 0);
@@ -589,7 +612,7 @@ function exportImport(text, phrase) {
   const v = { v: VAULT_FORMAT, seq, secrets: data.secrets, audit: [] };
   audit(v, 'import', null, mode, 'user');
   saveRaw(v, true);
-  return { secrets: Object.keys(data.secrets).length, mode, at: Number(f.at) || 0 };
+  return { secrets: Object.keys(data.secrets).length, mode, at: Number(f.at) || 0, binned, lost };
 }
 
 function exportOpen(f, master) {
@@ -711,10 +734,16 @@ function writeTrash(items) {
   writeAtomic(TRASH_PATH, JSON.stringify({ v: 1, items, mac: trashMac(items) }, null, 0));
 }
 
-function trashPut(entry) {
-  const items = readTrash().filter(i => i.id !== entry.id);
-  items.push(Object.assign({}, entry, { deletedAt: Date.now() }));
+function trashPut(entry) { trashPutMany([entry]); }
+
+function trashPutMany(entries) {
+  if (!entries || !entries.length) return 0;
+  const now = Date.now();
+  const ids = new Set(entries.map(e => e.id));
+  const items = readTrash().filter(i => !ids.has(i.id));
+  for (const e of entries) items.push(Object.assign({}, e, { deletedAt: now }));
   writeTrash(purgeTrashList(items));
+  return entries.length;
 }
 
 function purgeTrashList(items) {
@@ -767,10 +796,16 @@ function restoreTrashed(id) {
   const nom = freeName(v, entry.name);
   if (!nom) throw fail('no free name left for {0}', entry.name);
   const renamed = nom !== entry.name;
-  if (renamed) {
-    // The name is part of what the entry was sealed against, so a renamed entry
-    // has to be sealed again or it stops decrypting.
+  // The identity can clash too, and that one is silent: an import brings back
+  // the same entries with the same ids, so writing the binned copy under its own
+  // id REPLACED the live one instead of joining it. Guarding the name alone was
+  // not enough.
+  const clash = !!v.secrets[entry.id];
+  if (renamed || clash) {
+    // Both the id and the name are part of what the entry was sealed against,
+    // so the value has to be read before either changes, and sealed after.
     const value = open(entry);
+    if (clash) entry.id = crypto.randomUUID();
     entry.name = nom;
     entry.ct = seal(entry, value);
   }
