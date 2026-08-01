@@ -443,5 +443,8 @@
   "Ask every time": "Ask every time",
   "Be asked before every use of {0}?": "Be asked before every use of {0}?",
   "Each time Claude needs this key, a dialog appears here and the command waits for it. With no answer within a minute, the use is refused. Meant for the few keys where an unattended use would be expensive.": "Each time Claude needs this key, a dialog appears here and the command waits for it. With no answer within a minute, the use is refused. Meant for the few keys where an unattended use would be expensive.",
-  "{0} needs your confirmation for every use, and it was not given": "{0} needs your confirmation for every use, and it was not given"
+  "{0} needs your confirmation for every use, and it was not given": "{0} needs your confirmation for every use, and it was not given",
+  "{0} came back as {1}, since the name was taken again. Update any marker that points at it.": "{0} came back as {1}, since the name was taken again. Update any marker that points at it.",
+  "the vault moved while this operation was in flight ({0} behind {1}): nothing was written": "the vault moved while this operation was in flight ({0} behind {1}): nothing was written",
+  "no free name left for {0}": "no free name left for {0}"
 }

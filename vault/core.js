@@ -738,21 +738,48 @@ function listTrash() {
   })).sort((a, b) => b.deletedAt - a.deletedAt);
 }
 
+// A free name for something coming back. The original if nothing took it, so
+// every {{vault:NAME}} already written keeps working; otherwise a prefix, in
+// English because a key name never is anything else. Refusing was the previous
+// answer, and refusing to give back a key that is sitting right there, still
+// decryptable, is not an answer.
+function freeName(v, base) {
+  const taken = new Set(Object.keys(v.secrets).map(id => v.secrets[id].name));
+  if (!taken.has(base)) return base;
+  for (let i = 1; i < 50; i++) {
+    const prefix = i === 1 ? 'RECOVERY_' : 'RECOVERY' + i + '_';
+    // The 64 character cap is enforced by NAME_RE, so a long name loses its
+    // tail rather than the prefix that says where it came from.
+    const n = (prefix + base).slice(0, 64).replace(/_+$/, '');
+    if (NAME_RE.test(n) && !taken.has(n)) return n;
+  }
+  return null;
+}
+
 function restoreTrashed(id) {
   const items = readTrash();
   const it = items.find(i => i.id === id);
   if (!it) throw fail('nothing in the bin under that reference');
   const v = loadRaw();
-  if (findByName(v, it.name)) {
-    throw fail('{0} exists again in the vault: rename it before restoring this one', it.name);
-  }
   const entry = Object.assign({}, it);
   delete entry.deletedAt;
+
+  const nom = freeName(v, entry.name);
+  if (!nom) throw fail('no free name left for {0}', entry.name);
+  const renamed = nom !== entry.name;
+  if (renamed) {
+    // The name is part of what the entry was sealed against, so a renamed entry
+    // has to be sealed again or it stops decrypting.
+    const value = open(entry);
+    entry.name = nom;
+    entry.ct = seal(entry, value);
+  }
+
   v.secrets[entry.id] = entry;
-  audit(v, 'untrash', entry.name, null, 'user');
+  audit(v, 'untrash', entry.name, renamed ? it.name : null, 'user');
   saveRaw(v, true);
   writeTrash(items.filter(i => i.id !== id));
-  return { name: entry.name };
+  return { name: entry.name, from: it.name, renamed };
 }
 
 function emptyTrash() {

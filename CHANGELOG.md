@@ -131,7 +131,11 @@ snapshot, no copy, no second door. The values were gone for good.
   key, or replacing its value by hand, left the pending proposal in place.
   Approving it later overwrote the new value, or brought a deleted key back
   stripped of its expiry, limits and authorisations, which then made the binned
-  copy unrestorable because the name was taken again.
+  copy unrestorable because the name was taken again. A key coming back from the
+  bin to a name that is taken now returns as `RECOVERY_NAME` instead of being
+  refused: it was sitting there, still decryptable, and refusing to give it back
+  was not an answer. The original name is kept whenever it is free, so markers
+  already written keep working.
 - Two defences added against a vault loaded before a wait and written after it,
   since a confirmation can now hold an operation open for a minute: the read is
   redone after the wait, and any write of a vault older than the counter is

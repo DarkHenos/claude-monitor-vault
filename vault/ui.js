@@ -435,9 +435,15 @@ function activateVault(context, version, onChange) {
     const it = vault.listTrash().find(x => x.name === name);
     if (!it) return;
     try {
-      vault.restoreTrashed(it.id);
+      const r = vault.restoreTrashed(it.id);
       notify();
-      vscode.window.setStatusBarMessage(t('{0} is back in the vault', name), 4000);
+      if (r.renamed) {
+        vscode.window.showInformationMessage(
+          t('{0} came back as {1}, since the name was taken again. Update any marker that points at it.',
+            r.from, r.name));
+      } else {
+        vscode.window.setStatusBarMessage(t('{0} is back in the vault', name), 4000);
+      }
     } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
   }
 
@@ -465,9 +471,12 @@ function activateVault(context, version, onChange) {
       { title: t('Bin'), placeHolder: t('Pick a key to put back in the vault.') });
     if (!pick) return;
     try {
-      vault.restoreTrashed(pick.id);
+      const r = vault.restoreTrashed(pick.id);
       notify();
-      vscode.window.showInformationMessage(t('{0} is back in the vault', pick.name));
+      vscode.window.showInformationMessage(r.renamed
+        ? t('{0} came back as {1}, since the name was taken again. Update any marker that points at it.',
+            r.from, r.name)
+        : t('{0} is back in the vault', pick.name));
     } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
   }
 

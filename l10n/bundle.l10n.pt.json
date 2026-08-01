@@ -443,5 +443,8 @@
   "Ask every time": "Perguntar sempre",
   "Be asked before every use of {0}?": "Ser consultado antes de cada utilização de {0}?",
   "Each time Claude needs this key, a dialog appears here and the command waits for it. With no answer within a minute, the use is refused. Meant for the few keys where an unattended use would be expensive.": "Sempre que o Claude precisar desta chave, aparece aqui uma caixa e o comando espera por ela. Sem resposta em um minuto, a utilização é recusada. Para as poucas chaves cuja utilização sem vigilância sairia cara.",
-  "{0} needs your confirmation for every use, and it was not given": "{0} exige a tua confirmação em cada utilização, e não foi dada"
+  "{0} needs your confirmation for every use, and it was not given": "{0} exige a tua confirmação em cada utilização, e não foi dada",
+  "{0} came back as {1}, since the name was taken again. Update any marker that points at it.": "{0} voltou como {1}, porque o nome estava novamente ocupado. Atualiza os marcadores que apontam para ela.",
+  "the vault moved while this operation was in flight ({0} behind {1}): nothing was written": "o cofre mudou enquanto esta operacao decorria ({0} atras de {1}): nada foi escrito",
+  "no free name left for {0}": "nao resta nenhum nome livre para {0}"
 }
