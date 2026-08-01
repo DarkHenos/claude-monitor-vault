@@ -33,6 +33,11 @@ from 1.0.0 onwards.
 - Key age and last use on each row, with a marker on keys unused for six months.
 - Quota consumption projection.
 - Right-click menu on the panel background.
+- **Status bar personalization**: two styles, Prominent (default coloured pill) or
+  Custom (text colour only, over the neutral theme background). In Custom mode,
+  user-defined colour bands scale the text from gray to red as the session fills
+  up. The band editor appears in the settings page only when Custom is selected,
+  with draggable handles and direct percentage input.
 
 ### Changed
 

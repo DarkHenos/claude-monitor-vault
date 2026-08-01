@@ -76,7 +76,8 @@ Requires **VS Code 1.106** or newer. Plain JavaScript, no runtime dependencies.
 |---|---|
 | Panel | one row per limit (session, week, per model), bar, percentage, countdown |
 | Activity-bar badge | session percentage on the icon, wherever the panel sits |
-| Status bar | compact figure such as `session: 8%`, full breakdown on hover |
+| Status bar | compact figure such as `session: 8%`, full breakdown on hover; two styles: **Prominent** (default coloured pill, amber then red) or **Custom** (text only, colour band configurable per session %) |
+| Band editor | in Custom mode only, drag boundaries or type percentages; built-in preview scales the text colour as you edit |
 | Alerts | at 80% then 95% of the session, 90% of the week, once per reset window |
 | Smart pause | when a limit is exhausted, calls stop until the reset time |
 | Projection | `full ≈ 17:40` when the slope says a quota runs out before it resets |
@@ -320,7 +321,8 @@ limits**.
 | `claudeLimits.alerts` | true | threshold notifications |
 | `claudeLimits.statusBar` | true | show usage in the status bar |
 | `claudeLimits.statusBarPosition` | right | which side of the status bar shows the figure |
-| `claudeLimits.statusBarStyle` | prominent | a coloured pill, or the plain theme coloured only at thresholds |
+| `claudeLimits.statusBarStyle` | prominent | `prominent`: coloured pill at all times (amber then red). `subtle`: text colour follows your band settings, no pill. |
+| `claudeLimits.statusBarBands` | `[{upTo: 50, color: "descriptionForeground"}, {upTo: 75, color: "foreground"}, {upTo: 90, color: "charts.yellow"}, {upTo: 100, color: "charts.red"}]` | colour band thresholds for Custom mode: each band runs up to its percentage, the next one starts there (no gaps or overlaps). Configurable from the settings page. Colours come from the theme, so they stay readable in light and dark. |
 | `claudeLimits.statusBarWeek` | false | also show the weekly limit |
 | `claudeLimits.badge` | true | numeric session badge on the activity-bar icon |
 | `claudeLimits.pauseWhenExhausted` | true | stop polling until the reset time |
