@@ -453,5 +453,9 @@
   "Save this vault first": "Sauvegarder d abord ce coffre",
   "Exported {0}.": "Exporte le {0}.",
   "Current vault saved. Run the restore again to bring the other one in.": "Coffre actuel sauvegarde. Relance la restauration pour faire entrer l autre.",
-  "The {0} previous one(s) are in the bin.": "Les {0} precedente(s) sont dans la corbeille."
+  "The {0} previous one(s) are in the bin.": "Les {0} precedente(s) sont dans la corbeille.",
+  "the access log": "le journal d acces",
+  "the bin": "la corbeille",
+  "the settings": "les reglages",
+  "Also restored: {0}.": "Egalement restaure : {0}."
 }

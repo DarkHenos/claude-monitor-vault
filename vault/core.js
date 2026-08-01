@@ -456,8 +456,21 @@ function exportBuild() {
 
   const master = masterKey();
   const v = loadRaw();
+  // Everything, not just the keys. A restore that hands back the secrets but
+  // loses the bin, the log and the settings is not a restore, it is a rescue.
+  // The export path itself is left out on purpose: it names a location on THIS
+  // machine, and pointing a fresh install at a folder that does not exist there
+  // is worse than asking once.
+  const p = policy();
   const payload = Buffer.from(JSON.stringify({
-    secrets: v.secrets, seq: v.seq || 0, v: VAULT_FORMAT
+    v: VAULT_FORMAT,
+    seq: v.seq || 0,
+    secrets: v.secrets,
+    audit: Array.isArray(v.audit) ? v.audit : [],
+    trash: readTrash(),
+    policy: { autoApprove: !!p.autoApprove },
+    defaults: uiDefaults(),
+    uiLang: uiLang()
   }), 'utf8');
 
   const iv = crypto.randomBytes(12);
@@ -609,10 +622,43 @@ function exportImport(text, phrase) {
     try { writeAtomic(RECOVERY_PATH, JSON.stringify(f.recovery)); }
     catch (e) { /* unwritable: the vault is fine, the phrase is the file's */ }
   }
-  const v = { v: VAULT_FORMAT, seq, secrets: data.secrets, audit: [] };
+  const v = {
+    v: VAULT_FORMAT, seq, secrets: data.secrets,
+    audit: Array.isArray(data.audit) ? data.audit : []
+  };
   audit(v, 'import', null, mode, 'user');
   saveRaw(v, true);
-  return { secrets: Object.keys(data.secrets).length, mode, at: Number(f.at) || 0, binned, lost };
+
+  // The rest of the configuration, restored after the vault so a failure here
+  // never costs the keys. Each piece is optional: an export written before this
+  // existed simply carries fewer of them.
+  if (Array.isArray(data.trash)) {
+    // The keys binned a few lines above must not be thrown away by the file's
+    // own bin. Both are kept, the local ones winning on a shared identifier.
+    const local = readTrash();
+    const vus = new Set(local.map(i => i.id));
+    const fusion = local.concat(data.trash.filter(i => i && i.id && !vus.has(i.id)));
+    try { writeTrash(purgeTrashList(fusion)); } catch (e) { /* the vault is in */ }
+  }
+  if (data.policy) {
+    try { setPolicy(Object.assign(policy(), { autoApprove: !!data.policy.autoApprove })); }
+    catch (e) { /* keeps the local setting */ }
+  }
+  if (data.defaults && data.defaults.set) {
+    try { setUiDefaults(data.defaults); } catch (e) { /* keeps the local ones */ }
+  }
+  if (typeof data.uiLang === 'string') {
+    try { setUiLang(data.uiLang); } catch (e) { /* keeps the local language */ }
+  }
+  return {
+    secrets: Object.keys(data.secrets).length, mode, at: Number(f.at) || 0, binned, lost,
+    restored: {
+      audit: (v.audit || []).length,
+      trash: Array.isArray(data.trash) ? data.trash.length : 0,
+      settings: !!data.policy, defaults: !!(data.defaults && data.defaults.set),
+      language: typeof data.uiLang === 'string' ? data.uiLang : null
+    }
+  };
 }
 
 function exportOpen(f, master) {
@@ -1839,6 +1885,32 @@ function setPolicy(o) {
   return policy();
 }
 
+// Defaults for a new key. They lived in VS Code's own state, which the export
+// cannot reach: a restored vault came back without them. Mirrored here so they
+// travel with everything else, and so the file stays the single place that
+// answers "what is this vault's configuration".
+const DEFAULTS_PATH = path.join(VAULT_DIR, 'defaults.json');
+
+function uiDefaults() {
+  try {
+    const d = JSON.parse(fs.readFileSync(DEFAULTS_PATH, 'utf8'));
+    return {
+      ttlMs: typeof d.ttlMs === 'number' ? d.ttlMs : 0,
+      burn: !!d.burn,
+      mcp: !!d.mcp,
+      set: true
+    };
+  } catch (e) { return { ttlMs: 0, burn: false, mcp: false, set: false }; }
+}
+
+function setUiDefaults(o) {
+  ensureDirs();
+  writeAtomic(DEFAULTS_PATH, JSON.stringify({
+    ttlMs: Number(o && o.ttlMs) || 0, burn: !!(o && o.burn), mcp: !!(o && o.mcp)
+  }));
+  return uiDefaults();
+}
+
 // The chosen interface language, mirrored to a file so the hooks (bare node
 // processes that cannot read VSCode state) can speak to the USER in their own
 // language when they refuse something the user will read.
@@ -2122,7 +2194,7 @@ module.exports = {
   revokeAll, consume, reveal, peek,
   requestReplace, pendingReplacements, approveReplace, rejectReplace, policy, setPolicy,
   notePending, pendingHints, takePending, takeRecent, auditLog,
-  noteProxied, unnoteProxied, isProxied, uiLang, setUiLang,
+  noteProxied, unnoteProxied, isProxied, uiLang, setUiLang, uiDefaults, setUiDefaults,
   mcpAllows,
   sweep, sweepTmp, suggest, isExpired, fingerprint, detectKind, kindSource,
   mintToken, redeemToken, materialize, redactor, healthCheck, lockDown,

@@ -319,19 +319,27 @@ function activateVault(context, version, onChange) {
 
   // ------------------------------------------------------------- default values
 
+  // The vault file is the source of truth, so an import can bring these back
+  // with everything else. VS Code's own state stays in sync for an install that
+  // predates the file, and seeds it once.
   function getDefaults() {
+    let f = { set: false };
+    try { f = vault.uiDefaults(); } catch (e) { /* no vault directory yet */ }
+    if (f.set) return { ttlMs: f.ttlMs, burn: f.burn, mcp: f.mcp };
     const d = context.globalState.get('vaultDefauts', null);
-    return {
+    const ancien = {
       ttlMs: d && typeof d.ttlMs === 'number' ? d.ttlMs : 0,   // 0 = no expiry
       burn: !!(d && d.burn),
       mcp: !!(d && d.mcp)
     };
+    if (d) { try { vault.setUiDefaults(ancien); } catch (e) { /* read-only disk */ } }
+    return ancien;
   }
 
   function setDefaults(d) {
-    context.globalState.update('vaultDefauts', {
-      ttlMs: Number(d.ttlMs) || 0, burn: !!d.burn, mcp: !!d.mcp
-    });
+    const v = { ttlMs: Number(d.ttlMs) || 0, burn: !!d.burn, mcp: !!d.mcp };
+    try { vault.setUiDefaults(v); } catch (e) { /* the state below still holds */ }
+    context.globalState.update('vaultDefauts', v);
     notify();
   }
 
@@ -1715,8 +1723,13 @@ ${entries.length
       const r = vault.exportImport(text, phrase);
       sessionKeys.clear();
       notify();
+      const aussi = [];
+      if (r.restored && r.restored.audit) aussi.push(t('the access log'));
+      if (r.restored && r.restored.trash) aussi.push(t('the bin'));
+      if (r.restored && r.restored.settings) aussi.push(t('the settings'));
       vscode.window.showInformationMessage(
         t('Vault restored from the file: {0} key(s).', String(r.secrets)) +
+        (aussi.length ? ' ' + t('Also restored: {0}.', aussi.join(', ')) : '') +
         (r.binned ? ' ' + t('The {0} previous one(s) are in the bin.', String(r.binned)) : ''));
     } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
   }
