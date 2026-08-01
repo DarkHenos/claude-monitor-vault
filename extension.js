@@ -445,6 +445,7 @@ function activate(context) {
   let lastCacheAt = 0;      // timestamp of the cache currently displayed
   let backoffUntil = 0;     // end of the pause after an error (429, offline...)
   let webviewView = null;      // the side-bar view (left or secondary)
+  let htmlLang = null;         // language the panel's baked dictionary was built in
   let timer = null;
   let ticking = false;
   let lastSig = '';         // signature of the last render (avoids identical re renders)
@@ -492,6 +493,7 @@ function activate(context) {
       webviewView = v;
       v.webview.options = { enableScripts: true, localResourceRoots: [] };
       v.webview.html = getHtml(panelStrings());
+      htmlLang = i18n.current();
       const subs = [
         v.webview.onDidReceiveMessage(m => onWebviewMessage(m)),
         v.onDidChangeVisibility(() => {
@@ -593,7 +595,17 @@ function activate(context) {
     }
   }
 
+  // The panel carries two kinds of text: the row labels, which travel with the
+  // data and are translated at every refresh, and a dictionary baked into the
+  // HTML once, when the view is drawn. Those two can drift apart, and the panel
+  // then shows French labels above English wording. Rather than chase every way
+  // that can happen, the panel remembers which language its dictionary was built
+  // in and rebuilds itself the moment it stops matching.
   function postPayload() {
+    if (webviewView && htmlLang !== null && htmlLang !== i18n.current()) {
+      webviewView.webview.html = getHtml(panelStrings());
+      htmlLang = i18n.current();
+    }
     const p = payload();
     if (webviewView && webviewView.visible) webviewView.webview.postMessage(p);
   }
@@ -980,6 +992,7 @@ function activate(context) {
       i18n.load(context.globalState.get('uiLanguage', 'auto'), vscode.env.language);
       if (webviewView) {
         webviewView.webview.html = getHtml(panelStrings());
+        htmlLang = i18n.current();
         webviewView.webview.postMessage(payload());
       }
       if (last) last.rows = last.rows.map(r => Object.assign({}, r, {

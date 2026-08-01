@@ -60,6 +60,11 @@ the numbering restarts here on a semantic base.
 - The commit guard did not detect the `VARIABLE=value` form.
 - A key restored from the bin overwrote a live key sharing its identifier.
 - 156 interface strings were missing from the four translated languages.
+- The panel could show translated row labels above untranslated wording. Its
+  dictionary is baked into the HTML when the view is drawn, while the labels
+  travel with the data, so the two could drift apart. The panel now remembers
+  which language its dictionary was built in and rebuilds itself as soon as it
+  stops matching.
 
 ### Security
 
