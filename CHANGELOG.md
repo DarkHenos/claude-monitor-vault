@@ -118,6 +118,24 @@ snapshot, no copy, no second door. The values were gone for good.
 - **The commit guard was blind to the commonest form of all.** Its tokeniser
   treated `=` as part of a value, so `API_KEY=secret` matched as one word and
   fingerprinted to nothing. Found by its own test before it ever shipped.
+- **A key scoped to one MCP server was usable by any of them.** The proxy
+  enforced the restriction, but only stdio servers go through it: an HTTP or SSE
+  server is never wrapped, and the hook that serves them checked only the coarse
+  "allowed for MCP" flag. Both paths ask the same function now.
+- **An import by phrase left the recovery envelope pointing at the old key.**
+  Importing a vault from another machine installs that machine's master key,
+  but the local envelope still wrapped the one it replaced, while the panel kept
+  reporting the phrase as active. Using it afterwards would have restored a key
+  that opens nothing.
+- **A proposal waiting for approval outlived the key it described.** Deleting a
+  key, or replacing its value by hand, left the pending proposal in place.
+  Approving it later overwrote the new value, or brought a deleted key back
+  stripped of its expiry, limits and authorisations, which then made the binned
+  copy unrestorable because the name was taken again.
+- Two defences added against a vault loaded before a wait and written after it,
+  since a confirmation can now hold an operation open for a minute: the read is
+  redone after the wait, and any write of a vault older than the counter is
+  refused rather than performed.
 - Marker completion and the save watcher are each registered on their own, and
   forgivingly. Wired in with everything else, a single throw in either reported
   *Claude Vault unavailable* and took away every command, for an autocomplete.

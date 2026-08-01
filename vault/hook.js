@@ -336,6 +336,15 @@ function onPreToolMcp(input, tool, ti) {
       return full;
     }
     if (!s.mcp) { notAllowed.push(name); return full; }
+    // The proxy already enforces this, but only stdio servers go through it:
+    // an HTTP or SSE server is never wrapped, so this path is the only place
+    // that can refuse a key scoped to some OTHER server. mcpAllows exists so
+    // the answer is the same everywhere, and this was the consumer that drifted.
+    if (!vault.mcpAllows(s, server)) {
+      refused.push(name + ': allowed for MCP, but not for the server "' + server +
+        '" (its list: ' + (s.mcpServers || []).join(', ') + ')');
+      return full;
+    }
     try {
       const v = vault.consume(name, 'mcp:' + tool).value;
       used.push(name);

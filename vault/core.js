@@ -391,6 +391,16 @@ function loadRaw() {
 
 function saveRaw(v, structural) {
   if (structural) v.seq = (v.seq || 0) + 1;
+  // Refuse to write a vault older than the counter. Any caller that loaded, did
+  // something slow, and saved could otherwise push seq backwards: the key file
+  // would sit one ahead, every later load would cry replay, and the whole vault
+  // would be lost along with whatever the concurrent writer had just done.
+  // consume() opened exactly that window when it started waiting up to a minute
+  // for a confirmation. Throwing here loses one operation; writing loses the vault.
+  const hw = currentSeq();
+  if ((v.seq || 0) < hw) {
+    throw fail('the vault moved while this operation was in flight ({0} behind {1}): nothing was written', String(v.seq || 0), String(hw));
+  }
   v.audit = pruneAudit(v.audit);
   v.v = VAULT_FORMAT;                // any save migrates the file to the current format
   v.mac = fileMac(v.secrets, v.seq || 0, VAULT_FORMAT);
@@ -569,6 +579,12 @@ function exportImport(text, phrase) {
     _master = master;
     _masterMode = null;
     storeKey(master, seq);
+    // The local envelope, if there was one, wraps the key we have just replaced.
+    // Left alone, recoveryStatus() would keep saying "active" while the phrase
+    // it names restores a key that opens nothing. The imported envelope is the
+    // right one: it is opened by the words the user just typed.
+    try { writeAtomic(RECOVERY_PATH, JSON.stringify(f.recovery)); }
+    catch (e) { /* unwritable: the vault is fine, the phrase is the file's */ }
   }
   const v = { v: VAULT_FORMAT, seq, secrets: data.secrets, audit: [] };
   audit(v, 'import', null, mode, 'user');
@@ -1067,6 +1083,10 @@ function put(name, value, opts) {
   if (typeof value !== 'string' || !value.length) throw fail('Empty value');
   const v = loadRaw();
   const existing = findByName(v, n);
+  // A proposal waiting for approval describes the value that was there when it
+  // was made. Writing a new one makes it obsolete, and approving it afterwards
+  // would overwrite what the user just put in with something older.
+  if (v.replace && v.replace[n]) delete v.replace[n];
   const entry = {
     id: existing ? existing.id : crypto.randomUUID(),
     name: n,
@@ -1169,6 +1189,11 @@ function remove(name) {
   // Into the bin first: if that write fails, the key is still in the vault
   // rather than nowhere at all.
   trashPut(s);
+  // A pending proposal for a key that no longer exists would come back as a
+  // NEW key on approval, stripped of its expiry, its limits and its
+  // authorisations, and the binned entry would then be unrestorable because
+  // the name is taken again.
+  if (v.replace && v.replace[s.name]) delete v.replace[s.name];
   delete v.secrets[s.id];
   audit(v, 'delete', s.name, null, 'user');
   saveRaw(v, true);
@@ -1276,8 +1301,8 @@ function revokeAll(confirm) {
 // Internal consumption, the ONLY path that returns a plaintext value.
 function consume(name, who) {
   sweep();
-  const v = loadRaw();
-  const s = findByName(v, name);
+  let v = loadRaw();
+  let s = findByName(v, name);
   if (!s) {
     const names = Object.keys(v.secrets).map(id => v.secrets[id].name);
     const e = fail('unknown key: {0}', name);
@@ -1292,10 +1317,27 @@ function consume(name, who) {
   }
   // Asked BEFORE the counter moves and before anything is decrypted: a refused
   // use must leave no trace beyond the log line.
-  if (s.confirm && !askUse(s.name, who)) {
-    audit(v, 'use-refused', s.name, who || null, 'user');
-    saveRaw(v, false);
-    throw fail('{0} needs your confirmation for every use, and it was not given', s.name);
+  if (s.confirm) {
+    const granted = askUse(s.name, who);
+    // Up to a minute has passed inside that call, and the vault is a file other
+    // processes write to. Everything read before it is stale, so it is read again
+    // rather than written back over whatever happened meanwhile.
+    v = loadRaw();
+    s = findByName(v, name);
+    if (!granted) {
+      if (s) {
+        audit(v, 'use-refused', s.name, who || null, 'user');
+        saveRaw(v, false);
+      }
+      throw fail('{0} needs your confirmation for every use, and it was not given', name);
+    }
+    if (!s) throw fail('unknown key: {0}', name);
+    if (isExpired(s)) {
+      delete v.secrets[s.id];
+      audit(v, 'expire', s.name, null);
+      saveRaw(v, true);
+      throw fail('expired key: {0}', s.name);
+    }
   }
   const value = open(s);
   s.uses = (s.uses || 0) + 1;
