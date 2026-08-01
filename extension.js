@@ -73,10 +73,67 @@ function cfg() {
     location: c.get('location', 'secondarySidebar'),   // secondarySidebar | sidebar
     badge: c.get('badge', true),      // activity-bar badge, on by default
     statusPos: c.get('statusBarPosition', 'right'),      // left | right
-    statusStyle: c.get('statusBarStyle', 'prominent'),   // classic | accent | prominent
+    statusStyle: normStyle(c.get('statusBarStyle', 'prominent')),   // prominent | subtle
+    statusBands: readBands(c.get('statusBarBands', null)),
     statusWeek: c.get('statusBarWeek', false)            // also show the week
   };
   return cfgCache;
+}
+
+// "classic" was removed: it sat between the two remaining styles and nobody
+// could say out loud what it did that the others did not. Anyone who had picked
+// it wanted less colour rather than more, so it lands on the quiet style and
+// not on the permanent pill. Anything unknown falls back to the default.
+function normStyle(v) {
+  return (v === 'subtle' || v === 'classic') ? 'subtle' : 'prominent';
+}
+
+// The colours a band may carry, and the default set, both read from the
+// manifest rather than written twice. A theme colour id that does not exist
+// renders as the plain foreground with no error anywhere, so a list that drifts
+// from the one VS Code validates against would look like a broken feature
+// rather than a typo. The settings page reads the same two values.
+const BANDS_SCHEMA = require('./package.json')
+  .contributes.configuration.properties['claudeLimits.statusBarBands'];
+const BAND_COLORS = BANDS_SCHEMA.items.properties.color.enum;
+const BANDS_DEFAULT = BANDS_SCHEMA.default;
+
+// Bands are read as "up to X%", each one starting where the previous ended.
+// Holes and overlaps are impossible by construction rather than rejected after
+// the fact, which is also why the editor in the settings page can only ever
+// produce something valid. What still has to be defended against is a settings
+// file edited by hand: out of order, out of range, unknown colour, or a last
+// band that stops short of 100 and leaves the top of the scale unpainted.
+function readBands(raw) {
+  if (!Array.isArray(raw) || raw.length < 2) return defaultBands();
+  const out = [];
+  let prev = 0;
+  for (const b of raw) {
+    if (!b || typeof b.upTo !== 'number' || !isFinite(b.upTo)) continue;
+    if (BAND_COLORS.indexOf(b.color) === -1) continue;
+    const upTo = Math.min(100, Math.max(1, Math.round(b.upTo)));
+    if (upTo <= prev) continue;              // out of order or duplicate
+    out.push({ upTo, color: b.color });
+    prev = upTo;
+    if (out.length === 6) break;
+  }
+  if (out.length < 2) return defaultBands();
+  out[out.length - 1].upTo = 100;            // the scale always ends at 100
+  return out;
+}
+
+// A copy each time: the manifest object is shared through the require cache,
+// and handing it out would let one caller's edit reach every other reader.
+function defaultBands() {
+  return BANDS_DEFAULT.map(b => ({ upTo: b.upTo, color: b.color }));
+}
+
+// The colour for a percentage. The first band whose ceiling is not yet passed
+// wins, so 50 belongs to "up to 50" and not to the one after it.
+function bandColor(pct, bands) {
+  const p = Math.max(0, Math.min(100, pct));
+  for (const b of bands) if (p <= b.upTo) return b.color;
+  return bands[bands.length - 1].color;
 }
 
 // ---------------------------------------------------------------- API Anthropic
@@ -367,6 +424,157 @@ const CHART_COLOR = {
 };
 const BG_WARN = new vscode.ThemeColor('statusBarItem.warningBackground');
 const BG_CRIT = new vscode.ThemeColor('statusBarItem.errorBackground');
+
+// One ThemeColor object per id, built once. renderStatus runs on every
+// heartbeat and on every window focus change, and a new object each time would
+// make VS Code redraw the item even when the colour has not moved.
+const BAND_THEME = new Map();
+function bandTheme(id) {
+  let c = BAND_THEME.get(id);
+  if (!c) { c = new vscode.ThemeColor(id); BAND_THEME.set(id, c); }
+  return c;
+}
+
+// -------------------------------------------------------- recolouring the pill
+//
+// The status bar refuses any background other than its two reserved slots, and
+// drops the rest without a word. So the only route to another colour is to
+// redefine the slot itself, in the user's own settings. That is a heavier act
+// than it looks: the slot belongs to the workbench, not to this extension, so
+// every warning or error item in the status bar takes the new colour, other
+// extensions included. Hence the modal confirmation that says so, the scope
+// limited to the theme in use, and the record of exactly which keys were
+// written so that resetting removes ours and leaves everything else alone.
+const PILL_SLOTS = {
+  warn: ['statusBarItem.warningBackground', 'statusBarItem.warningForeground',
+         'statusBarItem.warningHoverBackground'],
+  crit: ['statusBarItem.errorBackground', 'statusBarItem.errorForeground',
+         'statusBarItem.errorHoverBackground']
+};
+const PILL_STATE = 'claudeLimits.pillKeys';
+const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+function hexParts(h) {
+  let s = h.slice(1);
+  if (s.length === 3) s = s[0] + s[0] + s[1] + s[1] + s[2] + s[2];
+  return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)];
+}
+
+// The hover colour is not asked for: one more question for a shade nobody
+// pictures in advance. It is the background nudged towards the text colour, so
+// it is always visibly different and always in the same family, whether the
+// user picked something dark or something light.
+function hoverOf(bg, fg) {
+  const a = hexParts(bg), b = hexParts(fg);
+  const mix = a.map((v, i) => Math.round(v + (b[i] - v) * 0.14));
+  return '#' + mix.map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+function activeThemeScope() {
+  const name = vscode.workspace.getConfiguration('workbench').get('colorTheme', '');
+  return name ? '[' + name + ']' : null;
+}
+
+// Merge, never replace: this object commonly holds customisations that have
+// nothing to do with us, and rewriting it whole would silently drop them.
+async function writePillColors(context, slot, bg, fg, scope) {
+  const conf = vscode.workspace.getConfiguration('workbench');
+  const cur = conf.get('colorCustomizations') || {};
+  const next = Object.assign({}, cur);
+  const values = [bg, fg, hoverOf(bg, fg)];
+  const keys = PILL_SLOTS[slot];
+  if (scope) {
+    next[scope] = Object.assign({}, next[scope] || {});
+    keys.forEach((k, i) => { next[scope][k] = values[i]; });
+  } else {
+    keys.forEach((k, i) => { next[k] = values[i]; });
+  }
+  await conf.update('colorCustomizations', next, vscode.ConfigurationTarget.Global);
+
+  const written = (context.globalState.get(PILL_STATE) || [])
+    .filter(e => !(e.scope === (scope || null) && keys.indexOf(e.key) !== -1));
+  keys.forEach(k => written.push({ scope: scope || null, key: k }));
+  await context.globalState.update(PILL_STATE, written);
+}
+
+// The flow itself. Nothing is written before the modal, and the modal spells
+// out the exact keys: a colour preference that quietly edits settings.json is
+// the kind of thing people discover months later and cannot explain.
+async function pillColorFlow(context) {
+  const scope = activeThemeScope();
+  const done = (context.globalState.get(PILL_STATE) || []).length > 0;
+  const items = [
+    { label: i18n.t('The current pill'), id: 'warn',
+      description: i18n.t('shown from the warning threshold on') },
+    { label: i18n.t('The critical threshold'), id: 'crit',
+      description: i18n.t('shown at 90% and above') }
+  ];
+  if (done) items.push({ label: i18n.t('Reset'), id: 'reset',
+    description: i18n.t('remove the colours written by this extension') });
+
+  const pick = await vscode.window.showQuickPick(items, {
+    title: i18n.t('Status bar pill colour'),
+    placeHolder: i18n.t('Which state should be recoloured?')
+  });
+  if (!pick) return;
+
+  if (pick.id === 'reset') {
+    const ok = await vscode.window.showWarningMessage(
+      i18n.t('Remove the status bar colours written by this extension?'),
+      { modal: true, detail: i18n.t('Only the keys written from here are removed. Anything else in your colour customisations stays untouched.') },
+      i18n.t('Remove'));
+    if (!ok) return;
+    const n = await resetPillColors(context);
+    vscode.window.showInformationMessage(i18n.t('{0} colour keys removed.', String(n)));
+    return;
+  }
+
+  const ask = async (prompt, value) => vscode.window.showInputBox({
+    title: i18n.t('Status bar pill colour'), prompt, value, ignoreFocusOut: true,
+    validateInput: v => (HEX_RE.test((v || '').trim()) ? null
+      : i18n.t('Expected a hexadecimal colour, for instance #7a3fd4 or #7a3fd4cc.'))
+  });
+  const bg = await ask(i18n.t('Background colour'), '#');
+  if (!bg) return;
+  const fg = await ask(i18n.t('Text colour on that background'), '#ffffff');
+  if (!fg) return;
+
+  const keys = PILL_SLOTS[pick.id];
+  const detail =
+    i18n.t('Keys written to your user settings:') + '\n' +
+    keys.map(k => '  ' + (scope ? scope + ' > ' : '') + k).join('\n') + '\n\n' +
+    (scope
+      ? i18n.t('Scope: the {0} theme only. Your other themes keep their own colours.', scope.slice(1, -1))
+      : i18n.t('Scope: every theme, because no colour theme could be read.')) + '\n\n' +
+    i18n.t('This redefines a workbench colour, not our own item. Every warning or error item in the status bar takes it, including those from other extensions.');
+  const go = await vscode.window.showWarningMessage(
+    i18n.t('Write these colours to your settings?'), { modal: true, detail }, i18n.t('Write'));
+  if (!go) return;
+
+  await writePillColors(context, pick.id, bg.trim(), fg.trim(), scope);
+  vscode.window.showInformationMessage(
+    i18n.t('Colours applied. Reverse them from the same menu, entry "{0}".', i18n.t('Reset')));
+}
+
+async function resetPillColors(context) {
+  const written = context.globalState.get(PILL_STATE) || [];
+  if (!written.length) return 0;
+  const conf = vscode.workspace.getConfiguration('workbench');
+  const cur = conf.get('colorCustomizations') || {};
+  const next = JSON.parse(JSON.stringify(cur));
+  let n = 0;
+  for (const e of written) {
+    const bag = e.scope ? next[e.scope] : next;
+    if (bag && Object.prototype.hasOwnProperty.call(bag, e.key)) { delete bag[e.key]; n++; }
+    // A scope left empty is noise in the settings file, so it goes too. Only
+    // one we emptied ourselves: a scope the user filled keeps its keys.
+    if (e.scope && next[e.scope] && Object.keys(next[e.scope]).length === 0) delete next[e.scope];
+  }
+  await conf.update('colorCustomizations',
+    Object.keys(next).length ? next : undefined, vscode.ConfigurationTarget.Global);
+  await context.globalState.update(PILL_STATE, []);
+  return n;
+}
 
 // A reused formatter: toLocaleTimeString() would rebuild one on every call.
 const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -769,18 +977,24 @@ function activate(context) {
     gaugeView.badge = inSecondary() ? badge : undefined;
   }
 
-  // The three styles, within what the status bar API allows. "classic" is the
-  // theme default, tinted amber or red only at the warn and crit thresholds.
-  // Two looks, within what the status bar API allows (a custom background colour
-  // is NOT permitted, only warning amber and error red render):
+  // Two looks, within what the status bar API allows. A custom background is
+  // NOT permitted: only the warning amber and the error red render, anything
+  // else is dropped without a word. The foreground has no such limit, but it is
+  // overridden the moment a background is applied, which is the whole reason
+  // "subtle" sets no background at all: the text carries the colour and the
+  // background stays the theme's own.
   //   prominent (default): the amber pill at all times, red at crit.
-  //   classic (VS Code):   the plain theme, coloured only at the thresholds.
-  function paintStatus(lvl) {
-    if (cfg().statusStyle === 'prominent') {
-      status.backgroundColor = lvl === 'crit' ? BG_CRIT : BG_WARN;
-    } else {
-      status.backgroundColor = lvl === 'crit' ? BG_CRIT : lvl === 'warn' ? BG_WARN : undefined;
+  //   subtle:              no pill ever, the text follows the bands.
+  function paintStatus(lvl, pct) {
+    if (cfg().statusStyle === 'subtle' && typeof pct === 'number') {
+      status.backgroundColor = undefined;
+      status.color = bandTheme(bandColor(pct, cfg().statusBands));
+      return;
     }
+    // No figures to place on the scale: this is a fault, not a fill level, so
+    // it keeps the amber it has always had whatever the chosen style.
+    status.color = undefined;
+    status.backgroundColor = lvl === 'crit' ? BG_CRIT : BG_WARN;
   }
 
   function renderStatus() {
@@ -810,7 +1024,11 @@ function activate(context) {
       (last.error ? ', ⚠ ' + last.error : '') + '_' +
       '\n\n_' + i18n.t('Click to open the panel') + '_'
     );
-    paintStatus(worstLevel(last.rows));
+    // The session drives the colour, because that is the number the bar shows
+    // and the one that empties within the day. Without a session row, the
+    // fullest limit stands in rather than leaving the scale unread.
+    const pct = s5 ? s5.pct : last.rows.reduce((m, r) => Math.max(m, r.pct), 0);
+    paintStatus(worstLevel(last.rows), pct);
   }
 
   function render(force) {
@@ -985,6 +1203,7 @@ function activate(context) {
       moveTo('secondarySidebar')),
     vscode.commands.registerCommand('claudeLimits.moveToPrimary', () =>
       moveTo('sidebar')),
+    vscode.commands.registerCommand('claudeLimits.pillColor', () => pillColorFlow(context)),
     // Called by the settings window after a language change. The webview holds
     // a dictionary baked into its HTML, so it is rebuilt rather than nudged;
     // the row labels come back translated on the next render.

@@ -33,7 +33,7 @@
   "cmd.vault.mcpSnippet": "Use in an MCP server",
   "cfg.badge": "Show a badge with the session percentage on the activity-bar icon.",
   "cfg.statusBarPosition": "Which side of the status bar shows the usage figure.",
-  "cfg.statusBarStyle": "How the status-bar figure looks: classic, Claude colour, or a prominent coloured pill.",
+  "cfg.statusBarStyle": "How the status-bar figure looks: a prominent coloured pill, or custom text that follows your colour bands over an untouched background.",
   "cfg.statusBarWeek": "Also show the weekly limit in the status bar, after the session.",
   "cfg.location": "Where the panel lives: the secondary side bar on the right, next to the chat, or the activity bar on the left. The mirror button in the panel title bar switches sides too.",
   "cmd.moveToSecondary": "Move next to the chat",
@@ -49,5 +49,11 @@
   "cmd.vault.togglePublic": "Public or secret",
   "cmd.vault.terminal": "Open a vault terminal",
   "cmd.vault.checkCommit": "Check what is staged for commit",
-  "cmd.vault.toggleConfirm": "Ask before every use"
+  "cmd.vault.toggleConfirm": "Ask before every use",
+  "cfg.statusBarStyle.prominent": "A coloured pill at all times, amber then red near a limit.",
+  "cfg.statusBarStyle.subtle": "No pill: the text colour follows the bands, from grey to red, over the theme background.",
+  "cfg.statusBarBands": "Colour bands for the custom style. Each band runs up to its percentage and the next one starts there, so gaps and overlaps cannot occur. Only the text is coloured; the background is left alone. Easier to set from the extension settings page, which draws the scale.",
+  "cfg.statusBarBands.upTo": "The percentage this band reaches. The last one is always 100.",
+  "cfg.statusBarBands.color": "A theme colour, so it stays readable in light and dark alike.",
+  "cmd.pillColor": "Status bar colours"
 }

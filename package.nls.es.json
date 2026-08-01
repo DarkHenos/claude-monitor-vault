@@ -33,7 +33,7 @@
   "cmd.vault.mcpSnippet": "Usar en un servidor MCP",
   "cfg.badge": "Mostrar un distintivo con el porcentaje de la sesión en el icono de la barra de actividad.",
   "cfg.statusBarPosition": "Qué lado de la barra de estado muestra la cifra de uso.",
-  "cfg.statusBarStyle": "Cómo se ve la cifra en la barra de estado: clásico, color Claude o una pastilla de color llamativa.",
+  "cfg.statusBarStyle": "Cómo se ve la cifra en la barra de estado: una píldora de color llamativa, o un texto personalizado que sigue tus tramos de color sobre un fondo intacto.",
   "cfg.statusBarWeek": "Mostrar también el límite semanal en la barra de estado, después de la sesión.",
   "cfg.location": "Dónde vive el panel: la barra lateral secundaria a la derecha, junto al chat, o la barra de actividad a la izquierda. El botón espejo de la barra de título también cambia de lado.",
   "cmd.moveToSecondary": "Mover junto al chat",
@@ -49,5 +49,11 @@
   "cmd.vault.togglePublic": "Pública o secreta",
   "cmd.vault.terminal": "Abrir un terminal de la caja fuerte",
   "cmd.vault.checkCommit": "Comprobar lo que está preparado para el commit",
-  "cmd.vault.toggleConfirm": "Preguntar antes de cada uso"
+  "cmd.vault.toggleConfirm": "Preguntar antes de cada uso",
+  "cfg.statusBarStyle.prominent": "Una píldora de color permanente, ámbar y luego roja al acercarse a un límite.",
+  "cfg.statusBarStyle.subtle": "Sin píldora: el color del texto sigue los tramos, del gris al rojo, sobre el fondo del tema.",
+  "cfg.statusBarBands": "Tramos de color para el estilo personalizado. Cada tramo llega hasta su porcentaje y el siguiente empieza ahí, así que no puede haber huecos ni solapamientos. Solo se colorea el texto; el fondo se deja tal cual. Más fácil de ajustar desde la página de ajustes de la extensión, que dibuja la escala.",
+  "cfg.statusBarBands.upTo": "El porcentaje al que llega este tramo. El último siempre es 100.",
+  "cfg.statusBarBands.color": "Un color del tema, para que siga siendo legible tanto en claro como en oscuro.",
+  "cmd.pillColor": "Colores de la barra de estado"
 }

@@ -33,7 +33,7 @@
   "cmd.vault.mcpSnippet": "In einem MCP-Server verwenden",
   "cfg.badge": "Ein Badge mit dem Prozentsatz der Sitzung auf dem Symbol der Aktivitätsleiste anzeigen.",
   "cfg.statusBarPosition": "Welche Seite der Statusleiste die Nutzungszahl anzeigt.",
-  "cfg.statusBarStyle": "Wie die Zahl in der Statusleiste aussieht: klassisch, Claude-Farbe oder eine auffällige farbige Pille.",
+  "cfg.statusBarStyle": "Wie die Zahl in der Statusleiste aussieht: eine auffällige farbige Plakette oder benutzerdefinierter Text, der Ihren Farbstufen über unverändertem Hintergrund folgt.",
   "cfg.statusBarWeek": "Das Wochenlimit zusätzlich in der Statusleiste anzeigen, nach der Sitzung.",
   "cfg.location": "Wo das Panel lebt: in der sekundären Seitenleiste rechts, neben dem Chat, oder in der Aktivitätsleiste links. Die Spiegel-Schaltfläche in der Titelleiste wechselt die Seite ebenfalls.",
   "cmd.moveToSecondary": "Neben den Chat verschieben",
@@ -49,5 +49,11 @@
   "cmd.vault.togglePublic": "Öffentlich oder geheim",
   "cmd.vault.terminal": "Tresor-Terminal öffnen",
   "cmd.vault.checkCommit": "Prüfen, was für den Commit vorgemerkt ist",
-  "cmd.vault.toggleConfirm": "Vor jeder Verwendung fragen"
+  "cmd.vault.toggleConfirm": "Vor jeder Verwendung fragen",
+  "cfg.statusBarStyle.prominent": "Dauerhaft eine farbige Plakette, bernsteinfarben und dann rot in der Nähe eines Limits.",
+  "cfg.statusBarStyle.subtle": "Keine Plakette: die Textfarbe folgt den Stufen, von Grau bis Rot, auf dem Hintergrund des Themas.",
+  "cfg.statusBarBands": "Farbstufen für den benutzerdefinierten Stil. Jede Stufe reicht bis zu ihrem Prozentwert und die nächste beginnt dort, Lücken und Überschneidungen sind also ausgeschlossen. Nur der Text wird gefärbt, der Hintergrund bleibt unangetastet. Einfacher über die Einstellungsseite der Erweiterung zu setzen, die die Skala zeichnet.",
+  "cfg.statusBarBands.upTo": "Der Prozentwert, bis zu dem diese Stufe reicht. Die letzte ist immer 100.",
+  "cfg.statusBarBands.color": "Eine Farbe des Themas, damit sie hell wie dunkel lesbar bleibt.",
+  "cmd.pillColor": "Farben der Statusleiste"
 }

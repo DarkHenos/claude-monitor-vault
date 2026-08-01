@@ -121,6 +121,12 @@
         "icon": "$(layout-sidebar-left)"
       },
       {
+        "command": "claudeLimits.pillColor",
+        "category": "%cat.limits%",
+        "title": "%cmd.pillColor%",
+        "icon": "$(paintcan)"
+      },
+      {
         "command": "claudeVault.show",
         "category": "%cat.vault%",
         "title": "%cmd.vault.show%",
@@ -310,6 +316,11 @@
           "command": "claudeLimits.moveToPrimary",
           "when": "view == claudeMonitorVaultAux.panel || view == claudeMonitorVault.summary",
           "group": "navigation@3"
+        },
+        {
+          "command": "claudeLimits.pillColor",
+          "when": "view == claudeMonitorVault.panel || view == claudeMonitorVaultAux.panel || view == claudeMonitorVault.summary",
+          "group": "9_apparence@1"
         }
       ],
       "webview/context": [
@@ -416,10 +427,56 @@
           "type": "string",
           "enum": [
             "prominent",
-            "classic"
+            "subtle"
+          ],
+          "enumDescriptions": [
+            "%cfg.statusBarStyle.prominent%",
+            "%cfg.statusBarStyle.subtle%"
           ],
           "default": "prominent",
           "description": "%cfg.statusBarStyle%"
+        },
+        "claudeLimits.statusBarBands": {
+          "type": "array",
+          "default": [
+            { "upTo": 50, "color": "descriptionForeground" },
+            { "upTo": 75, "color": "foreground" },
+            { "upTo": 90, "color": "charts.yellow" },
+            { "upTo": 100, "color": "charts.red" }
+          ],
+          "minItems": 2,
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "required": [
+              "upTo",
+              "color"
+            ],
+            "properties": {
+              "upTo": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 100,
+                "description": "%cfg.statusBarBands.upTo%"
+              },
+              "color": {
+                "type": "string",
+                "enum": [
+                  "descriptionForeground",
+                  "foreground",
+                  "charts.blue",
+                  "charts.green",
+                  "charts.purple",
+                  "charts.orange",
+                  "charts.yellow",
+                  "charts.red",
+                  "errorForeground"
+                ],
+                "description": "%cfg.statusBarBands.color%"
+              }
+            }
+          },
+          "markdownDescription": "%cfg.statusBarBands%"
         },
         "claudeLimits.statusBarWeek": {
           "type": "boolean",

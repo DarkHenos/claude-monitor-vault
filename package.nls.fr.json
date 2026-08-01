@@ -33,7 +33,7 @@
   "cmd.vault.mcpSnippet": "Utiliser dans un serveur MCP",
   "cfg.badge": "Afficher un badge avec le pourcentage de la session sur l'icône de la barre d'activité.",
   "cfg.statusBarPosition": "Quel côté de la barre d'état affiche le chiffre d'usage.",
-  "cfg.statusBarStyle": "L'aspect du chiffre dans la barre d'état : classique, couleur Claude, ou une pastille colorée voyante.",
+  "cfg.statusBarStyle": "L'aspect du chiffre dans la barre d'état : une pastille colorée voyante, ou un texte personnalisé qui suit tes paliers de couleur sur un fond intact.",
   "cfg.statusBarWeek": "Afficher aussi la limite hebdomadaire dans la barre d'état, après la session.",
   "cfg.location": "Où vit le panneau : la barre latérale secondaire à droite, à côté du chat, ou la barre d'activité à gauche. Le bouton miroir de la barre de titre change aussi de côté.",
   "cmd.moveToSecondary": "Déplacer à côté du chat",
@@ -49,5 +49,11 @@
   "cmd.vault.togglePublic": "Publique ou secrète",
   "cmd.vault.terminal": "Ouvrir un terminal du coffre",
   "cmd.vault.checkCommit": "Vérifier ce qui est en index pour le commit",
-  "cmd.vault.toggleConfirm": "Demander avant chaque usage"
+  "cmd.vault.toggleConfirm": "Demander avant chaque usage",
+  "cfg.statusBarStyle.prominent": "Une pastille colorée en permanence, ambre puis rouge à l'approche d'une limite.",
+  "cfg.statusBarStyle.subtle": "Pas de pastille : la couleur du texte suit les paliers, du gris au rouge, sur le fond du thème.",
+  "cfg.statusBarBands": "Paliers de couleur pour le style personnalisé. Chaque palier va jusqu'à son pourcentage et le suivant commence là, ni trou ni chevauchement n'est donc possible. Seul le texte est coloré, le fond n'est pas touché. Plus simple à régler depuis la page des paramètres de l'extension, qui dessine l'échelle.",
+  "cfg.statusBarBands.upTo": "Le pourcentage auquel ce palier va. Le dernier vaut toujours 100.",
+  "cfg.statusBarBands.color": "Une couleur du thème, elle reste donc lisible en clair comme en sombre.",
+  "cmd.pillColor": "Couleurs de la barre d'état"
 }

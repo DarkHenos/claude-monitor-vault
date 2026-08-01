@@ -33,7 +33,7 @@
   "cmd.vault.mcpSnippet": "Usar num servidor MCP",
   "cfg.badge": "Mostrar um emblema com a percentagem da sessão no ícone da barra de atividades.",
   "cfg.statusBarPosition": "Que lado da barra de estado mostra o valor de utilização.",
-  "cfg.statusBarStyle": "Como a barra de estado mostra o valor: clássico, cor Claude ou uma pastilha colorida vistosa.",
+  "cfg.statusBarStyle": "Como a barra de estado mostra o valor: uma pastilha colorida vistosa, ou um texto personalizado que segue os teus patamares de cor sobre um fundo intacto.",
   "cfg.statusBarWeek": "Mostrar também o limite semanal na barra de estado, depois da sessão.",
   "cfg.location": "Onde vive o painel: a barra lateral secundária à direita, ao lado do chat, ou a barra de atividades à esquerda. O botão espelho da barra de título também troca de lado.",
   "cmd.moveToSecondary": "Mover para junto do chat",
@@ -49,5 +49,11 @@
   "cmd.vault.togglePublic": "Pública ou secreta",
   "cmd.vault.terminal": "Abrir um terminal do cofre",
   "cmd.vault.checkCommit": "Verificar o que está preparado para o commit",
-  "cmd.vault.toggleConfirm": "Perguntar antes de cada utilização"
+  "cmd.vault.toggleConfirm": "Perguntar antes de cada utilização",
+  "cfg.statusBarStyle.prominent": "Uma pastilha colorida em permanência, âmbar e depois vermelha ao aproximar-se de um limite.",
+  "cfg.statusBarStyle.subtle": "Sem pastilha: a cor do texto segue os patamares, do cinzento ao vermelho, sobre o fundo do tema.",
+  "cfg.statusBarBands": "Patamares de cor para o estilo personalizado. Cada patamar vai até à sua percentagem e o seguinte começa aí, por isso não pode haver intervalos nem sobreposições. Só o texto é colorido; o fundo fica intacto. Mais fácil de definir a partir da página de definições da extensão, que desenha a escala.",
+  "cfg.statusBarBands.upTo": "A percentagem até à qual este patamar vai. O último é sempre 100.",
+  "cfg.statusBarBands.color": "Uma cor do tema, para se manter legível tanto em claro como em escuro.",
+  "cmd.pillColor": "Cores da barra de estado"
 }

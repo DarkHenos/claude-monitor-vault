@@ -781,6 +781,73 @@ function activateVault(context, version, onChange) {
     ).join('');
   }
 
+  // The colour bands. The list of allowed colours and the default set come from
+  // the manifest, the same place VS Code validates the setting against, so the
+  // editor here can never offer something the setting would reject.
+  const BANDS_SCHEMA = require('../package.json')
+    .contributes.configuration.properties['claudeLimits.statusBarBands'];
+
+  function defaultBandsOf() {
+    return BANDS_SCHEMA.default.map(b => ({ upTo: b.upTo, color: b.color }));
+  }
+
+  // "classic" is gone from the list of styles. A settings file still holding it
+  // reads as the custom style, the same mapping extension.js applies, so the
+  // dropdown never comes up empty on someone who had chosen it.
+  function styleOf(cl) {
+    const v = cl.get('statusBarStyle', 'prominent');
+    return (v === 'subtle' || v === 'classic') ? 'subtle' : 'prominent';
+  }
+
+  // Read defensively: this setting can be edited by hand. Anything unusable
+  // falls back to the defaults rather than drawing a broken gauge, and the
+  // editor writes a clean value again on the next change.
+  function bandsOf(cl) {
+    const raw = cl.get('statusBarBands', null);
+    if (!Array.isArray(raw) || raw.length < 2 || raw.length > 6) return defaultBandsOf();
+    const allowed = BANDS_SCHEMA.items.properties.color.enum;
+    const out = [];
+    let prev = 0;
+    for (const b of raw) {
+      if (!b || typeof b.upTo !== 'number' || allowed.indexOf(b.color) === -1) return defaultBandsOf();
+      const upTo = Math.round(b.upTo);
+      if (upTo <= prev || upTo > 100) return defaultBandsOf();
+      out.push({ upTo, color: b.color });
+      prev = upTo;
+    }
+    out[out.length - 1].upTo = 100;
+    return out;
+  }
+
+  // What comes back from the webview is still input: a panel can be scripted,
+  // and a malformed array here would end up in the user's settings file.
+  function cleanBands(raw) {
+    if (!Array.isArray(raw) || raw.length < 2 || raw.length > 6) return defaultBandsOf();
+    const allowed = BANDS_SCHEMA.items.properties.color.enum;
+    const out = [];
+    let prev = 0;
+    for (const b of raw) {
+      if (!b || typeof b.upTo !== 'number' || !isFinite(b.upTo)) return defaultBandsOf();
+      if (allowed.indexOf(b.color) === -1) return defaultBandsOf();
+      const upTo = Math.round(b.upTo);
+      if (upTo <= prev || upTo > 100) return defaultBandsOf();
+      out.push({ upTo, color: b.color });
+      prev = upTo;
+    }
+    out[out.length - 1].upTo = 100;
+    return out;
+  }
+
+  function bandColorList() {
+    const noms = {
+      descriptionForeground: t('Grey'), foreground: t('Normal text'),
+      'charts.blue': t('Blue'), 'charts.green': t('Green'), 'charts.purple': t('Purple'),
+      'charts.orange': t('Orange'), 'charts.yellow': t('Yellow'), 'charts.red': t('Red'),
+      errorForeground: t('Error red')
+    };
+    return BANDS_SCHEMA.items.properties.color.enum.map(id => ({ id, nom: noms[id] || id }));
+  }
+
   // ---------------------------------------------------------- settings window
 
   let settingsPanel = null;
@@ -812,11 +879,17 @@ function activateVault(context, version, onChange) {
           c.update('badge', !!m.badge, target),
           c.update('statusBarPosition', m.statusPos === 'left' ? 'left' : 'right', target),
           c.update('statusBarStyle',
-            ['classic', 'accent', 'prominent'].indexOf(m.statusStyle) !== -1 ? m.statusStyle : 'prominent', target),
+            m.statusStyle === 'subtle' ? 'subtle' : 'prominent', target),
+          c.update('statusBarBands', cleanBands(m.statusBands), target),
           c.update('statusBarWeek', !!m.statusWeek, target)
         ]).then(() => {
+          // The page is NOT rebuilt here. It used to be, and every change threw
+          // the reader back to the top of a long page; worse, dragging a band
+          // boundary would rebuild the gauge out from under the pointer. The
+          // page already shows what was just typed, so there is nothing to
+          // refresh. Sections whose state comes from elsewhere redraw
+          // themselves, further down.
           vscode.window.setStatusBarMessage(t('Settings saved'), 3000);
-          if (settingsPanel) settingsPanel.webview.html = settingsHtml();
         }, e => vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))));
       }
       if (m.type === 'connect') connect();
@@ -868,141 +941,198 @@ function activateVault(context, version, onChange) {
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <style>
-  /* Two zones, and the order is the argument: what saves you comes before what
-     you look at. Protection is a set of cards, each carrying a state, because
-     those are things you check rather than things you tune. Preferences stay a
-     plain column of rows, which is what a settings list should look like.
+  /* Layout first: a fixed navigation rail on the left, content on the right,
+     the way a settings page of any size is laid out. Colours stay VS Code's
+     own, the page belongs to the editor and should look like it. The only
+     brand mark is the extension's glyph in the header.
 
-     Every default that is not obvious says why it is the default. An option
-     nobody can explain is an option nobody dares change. */
+     The order of the sections is the argument: whether the thing works, then
+     whether you can get your keys back, then the tuning. */
   :root {
     --line: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
-    --carte: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
-    --ok: var(--vscode-charts-green);
+    --carte: color-mix(in srgb, var(--vscode-foreground) 3.5%, transparent);
     --attention: var(--vscode-charts-yellow);
+    --rail: 208px;
   }
+  * { box-sizing: border-box; }
   body { font-family: var(--vscode-font-family); font-size: 13px; color: var(--vscode-foreground);
-         margin: 0; padding: 0; line-height: 1.45; }
-  .wrap { max-width: 720px; margin: 0 auto; padding: 36px 32px 72px; }
-  h1 { font-size: 22px; font-weight: 600; margin: 0 0 5px; letter-spacing: -.3px; }
-  .sub { font-size: 13px; opacity: .6; margin: 0 0 4px; max-width: 62ch; }
+         margin: 0; padding: 0; line-height: 1.5; }
 
-  /* Zone: the top-level split, loud enough to be a landmark when scrolling. */
-  .zone { margin-top: 40px; }
-  .zone > h2 { font-size: 15px; font-weight: 600; margin: 0 0 3px; letter-spacing: -.1px; }
-  .zone > .intro { font-size: 12.5px; opacity: .58; margin: 0 0 18px; max-width: 62ch; }
+  .page { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr);
+          gap: 40px; max-width: 940px; margin: 0 auto; padding: 32px 28px 80px; }
 
-  /* A protection card. The left edge carries the state, so a glance down the
-     page answers "is anything wrong" without reading a word. */
-  .carte { background: var(--carte); border: 1px solid var(--line); border-radius: 8px;
-           border-left: 3px solid var(--ok); padding: 15px 17px; margin-bottom: 12px; }
-  .carte.ko { border-left-color: var(--attention); }
-  .carte > h3 { font-size: 13.5px; font-weight: 600; margin: 0 0 6px;
-                display: flex; align-items: baseline; gap: 9px; }
-  .pastille { font-size: 11.5px; font-weight: 500; opacity: .8; }
+  /* The rail. Sticky, so the map of the page stays available all the way down. */
+  .rail { position: sticky; top: 32px; align-self: start; }
+  .tete { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+  .tete svg { flex: 0 0 auto; width: 22px; height: 22px; }
+  .tete h1 { font-size: 13.5px; font-weight: 600; margin: 0; line-height: 1.25; letter-spacing: -.1px; }
+  .rail nav { display: flex; flex-direction: column; gap: 1px; }
+  .rail .groupe { font-size: 10px; font-weight: 600; letter-spacing: .8px; text-transform: uppercase;
+                  opacity: .45; margin: 16px 0 6px; padding-left: 10px; }
+  .rail .groupe:first-child { margin-top: 0; }
+  .rail a { display: block; font-size: 12.5px; text-decoration: none; padding: 5px 10px;
+            border-radius: 5px; color: var(--vscode-foreground); opacity: .7; }
+  .rail a:hover { background: var(--vscode-list-hoverBackground); opacity: 1; }
+  .rail a.actif { background: var(--vscode-list-activeSelectionBackground);
+                  color: var(--vscode-list-activeSelectionForeground); opacity: 1; font-weight: 500; }
+  .rail a:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+
+  .corps { min-width: 0; max-width: 620px; }
+  .zone { scroll-margin-top: 24px; }
+  .zone + .zone { margin-top: 44px; }
+  .zone > h2 { font-size: 17px; font-weight: 600; margin: 0 0 4px; letter-spacing: -.2px; }
+  .zone > .intro { font-size: 12.5px; opacity: .58; margin: 0 0 20px; max-width: 60ch; }
+
+  /* A protection card: a title, its state, what it is, why it matters, then the
+     actions. Same shape every time, so the eye learns it once. */
+  .carte { scroll-margin-top: 24px; background: var(--carte); border: 1px solid var(--line);
+           border-radius: 8px; padding: 16px 18px; margin-bottom: 10px; }
+  .carte.ko { border-color: color-mix(in srgb, var(--attention) 30%, transparent); }
+  .carte > h3 { font-size: 13.5px; font-weight: 600; margin: 0 0 7px;
+                display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pastille { font-size: 11px; font-weight: 500; opacity: .7;
+              display: inline-flex; align-items: center; gap: 6px; }
+  .pastille::before { content: ''; width: 6px; height: 6px; border-radius: 50%;
+                      background: currentColor; flex: 0 0 auto; opacity: .8; }
   .carte.ko .pastille { color: var(--attention); opacity: 1; }
 
-  .sect { margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--line); }
-  .sect > h2 { font-size: 11px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase;
-               opacity: .55; margin: 0 0 16px; }
-  .row { margin-bottom: 20px; }
+  .sect { scroll-margin-top: 24px; margin-top: 28px; padding-top: 22px;
+          border-top: 1px solid var(--line); }
+  .sect > h2 { font-size: 10.5px; font-weight: 600; letter-spacing: .9px; text-transform: uppercase;
+               opacity: .5; margin: 0 0 18px; }
+  .row { margin-bottom: 22px; }
   .row:last-child { margin-bottom: 0; }
   .name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
-  .desc { font-size: 12px; opacity: .6; line-height: 1.5; margin: 2px 0 8px; max-width: 62ch; }
+  .desc { font-size: 12.5px; opacity: .58; line-height: 1.55; margin: 2px 0 9px; max-width: 60ch; }
 
-  /* Why this default. Set apart from the description because it answers a
-     different question: not what the option does, but why it sits where it
-     sits. */
-  .pourquoi { font-size: 11.5px; line-height: 1.5; margin: 6px 0 0; max-width: 62ch;
-              padding-left: 10px; border-left: 2px solid var(--line); opacity: .62; }
-  .reco { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: .4px;
-          text-transform: uppercase; padding: 1px 6px; border-radius: 3px; margin-left: 8px;
-          color: var(--vscode-charts-green); vertical-align: 1px;
-          border: 1px solid color-mix(in srgb, var(--vscode-charts-green) 40%, transparent); }
+  /* Why this default, set apart because it answers a different question: not
+     what the option does, but why it sits where it sits. */
+  .pourquoi { font-size: 11.5px; line-height: 1.6; margin: 8px 0 0; max-width: 60ch;
+              padding: 1px 0 1px 12px; opacity: .58; border-left: 2px solid var(--line); }
+  .reco { display: inline-block; font-size: 9.5px; font-weight: 600; letter-spacing: .5px;
+          text-transform: uppercase; padding: 2px 7px; border-radius: 3px; margin-left: 9px;
+          opacity: .75; vertical-align: 1px;
+          border: 1px solid color-mix(in srgb, var(--vscode-foreground) 25%, transparent); }
 
-  /* Secondary display choices, folded away: four rows of chrome preferences
-     were sitting at the same weight as whether the vault can be recovered. */
   details { margin-top: 10px; }
   details > summary { cursor: pointer; font-size: 12px; opacity: .65; list-style: none;
                       padding: 4px 0; user-select: none; }
   details > summary::-webkit-details-marker { display: none; }
-  details > summary::before { content: '\\203A'; display: inline-block; margin-right: 7px;
+  details > summary::before { content: '›'; display: inline-block; margin-right: 8px;
                               transition: transform .12s ease; }
   details[open] > summary::before { transform: rotate(90deg); }
   details > summary:hover { opacity: 1; }
-  details .row { margin-top: 16px; }
-  select { font-family: inherit; font-size: 12.5px; padding: 5px 9px; border-radius: 4px; min-width: 260px;
+  details .row { margin-top: 18px; }
+
+  select { font-family: inherit; font-size: 12.5px; padding: 5px 9px; border-radius: 4px;
+           min-width: 250px; max-width: 100%;
            color: var(--vscode-settings-dropdownForeground, var(--vscode-input-foreground));
            background: var(--vscode-settings-dropdownBackground, var(--vscode-input-background));
            border: 1px solid var(--vscode-settings-dropdownBorder, var(--vscode-input-border, transparent)); }
   select:hover { border-color: color-mix(in srgb, var(--vscode-foreground) 30%, transparent); }
   select:focus { outline: none; border-color: var(--vscode-focusBorder); }
-  .toggle { display: flex; align-items: center; gap: 9px; cursor: pointer; }
+  .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
   .toggle input { margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-button-background)); }
   .toggle .name { margin: 0; font-weight: 500; }
-  button { appearance: none; font-family: inherit; font-size: 12.5px; padding: 5px 14px; cursor: pointer;
-           border-radius: 4px; border: 0;
+
+  button { appearance: none; font-family: inherit; font-size: 12.5px; padding: 5px 14px;
+           cursor: pointer; border-radius: 4px; border: 0;
            background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
   button:hover { background: var(--vscode-button-hoverBackground); }
-  button.doux { background: none; color: var(--vscode-foreground); opacity: .85;
+  button.doux { background: none; color: var(--vscode-foreground); opacity: .88;
            border: 1px solid color-mix(in srgb, var(--vscode-foreground) 22%, transparent); }
   button.doux:hover { background: var(--vscode-list-hoverBackground); opacity: 1; }
-  button:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+  /* Destructive, and set apart: "Revoke everything" was sitting between two
+     harmless buttons in the same grey. */
+  button.danger { color: var(--vscode-errorForeground); opacity: .85;
+           border-color: color-mix(in srgb, var(--vscode-errorForeground) 28%, transparent); }
+  button.danger:hover { background: color-mix(in srgb, var(--vscode-errorForeground) 10%, transparent);
+           opacity: 1; }
+  button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+  button[disabled] { opacity: .4; cursor: not-allowed; }
+  .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  .actions .pousse { margin-left: auto; }
+
+  /* A path is read character by character when something goes wrong, so it gets
+     the editor font and room to wrap rather than an ellipsis. */
+  .chemin { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px;
+            opacity: .6; margin: 8px 0 0; word-break: break-all; }
   /* Kept for the health warnings, which are exceptions and should look like it. */
   .etat { font-size: 12.5px; padding: 9px 12px; border-radius: 4px; margin: 10px 0 0;
           border-left: 3px solid var(--attention);
           background: color-mix(in srgb, var(--vscode-charts-yellow) 9%, transparent); }
-  .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-  /* A path is read character by character when something goes wrong, so it gets
-     the editor font and room to wrap rather than an ellipsis. */
-  .chemin { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px;
-            opacity: .65; margin: -6px 0 10px; word-break: break-all; }
-  .actions button[disabled] { opacity: .4; cursor: not-allowed; }
-</style></head><body>
-<div class="wrap">
-<h1>${esc(t('Claude Monitor & Vault'))}</h1>
-<div class="sub">${esc(t('The usage monitor and the vault, in one place.'))}</div>
 
-<div class="zone">
+  /* The band editor. The gauge is the setting itself, not a picture of it: the
+     handles are what you move, and a band cannot leave a hole or overlap its
+     neighbour because its end IS the next one's start. */
+  .jauge { position: relative; height: 26px; border-radius: 5px; display: flex;
+           border: 1px solid var(--line); margin: 10px 0 4px; user-select: none; }
+  .jauge .seg:first-child { border-radius: 4px 0 0 4px; }
+  .jauge .seg:last-child { border-radius: 0 4px 4px 0; }
+  .jauge .poignee { position: absolute; top: -4px; bottom: -4px; width: 13px; margin-left: -6px;
+                    cursor: ew-resize; z-index: 2; touch-action: none; }
+  .jauge .poignee::before { content: ''; position: absolute; left: 5px; top: 0; bottom: 0; width: 3px;
+                            border-radius: 2px; background: var(--vscode-foreground); opacity: .5; }
+  .jauge .poignee:hover::before, .jauge .poignee.prise::before { opacity: 1; }
+  .echelle { display: flex; justify-content: space-between; font-size: 10.5px; opacity: .45; }
+  .palier { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .palier .puce { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto;
+                  border: 1px solid var(--line); }
+  .palier .jusqua { font-size: 12px; opacity: .6; }
+  .palier select { min-width: 0; flex: 1; }
+  .palier .oter { background: none; border: 0; padding: 2px 7px; font-size: 15px; line-height: 1;
+                  color: var(--vscode-foreground); opacity: .45; }
+  .palier .oter:hover { background: var(--vscode-list-hoverBackground); opacity: 1; }
+  input[type=number] { font-family: inherit; font-size: 12.5px; padding: 4px 6px; width: 58px;
+           border-radius: 4px; color: var(--vscode-input-foreground);
+           background: var(--vscode-input-background);
+           border: 1px solid var(--vscode-input-border, transparent); }
+  input[type=number]:focus { outline: none; border-color: var(--vscode-focusBorder); }
+
+  /* A webview panel is often narrow. Below this, the rail becomes a header and
+     the page reads as one column, which is the only sensible thing at 500px. */
+  @media (max-width: 820px) {
+    .page { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 24px 20px 64px; }
+    .rail { position: static; margin-bottom: 26px; }
+    .rail nav { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+    .rail .groupe { display: none; }
+    .rail a { font-size: 12px; padding: 4px 9px;
+              border: 1px solid color-mix(in srgb, var(--vscode-foreground) 14%, transparent); }
+  }
+</style></head><body>
+<div class="page">
+
+<div class="rail">
+  <div class="tete">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#D97757" stroke-width="1.5"
+       stroke-linecap="round" stroke-linejoin="round"
+       transform="translate(12 12) scale(1.3) translate(-12 -12)">
+      <path d="M4 15.5a8 8 0 0 1 16 0"/><path d="M12 15.5V8.6"/><path d="M12 15.5 8.9 12.4"/>
+      <path d="M12 15.5 15.1 12.4"/><path d="M12 15.5H8.3"/><path d="M12 15.5H15.7"/>
+    </g></svg>
+    <h1>${esc(t('Claude Monitor & Vault'))}</h1>
+  </div>
+  <nav>
+    <div class="groupe">${esc(t('Protection'))}</div>
+    <a href="#connexion">${esc(t('Connection to Claude Code'))}</a>
+    <a href="#secours">${esc(t('Recovery phrase'))}</a>
+    <a href="#sauvegarde">${esc(t('Backup file'))}</a>
+    <a href="#corbeille">${esc(t('Bin'))}</a>
+    <div class="groupe">${esc(t('Preferences'))}</div>
+    <a href="#usage">${esc(t('Usage tracking'))}</a>
+    <a href="#cles">${esc(t('New keys'))}</a>
+    <a href="#affichage">${esc(t('Display'))}</a>
+    <a href="#langue">${esc(t('Language'))}</a>
+  </nav>
+</div>
+
+<div class="corps">
+
+<div class="zone" id="protection">
 <h2>${esc(t('Protection'))}</h2>
 <div class="intro">${esc(t('What decides whether you get your keys back. Everything here is already set up; these cards are for checking, not for tuning.'))}</div>
 
-<div class="carte${exp.path && exp.present ? '' : ' ko'}">
-<h3>${esc(t('Backup file'))}<span class="pastille">${esc(!exp.path
-    ? t('none yet')
-    : (!exp.present
-        ? t('file missing')
-        : (exp.portable ? t('portable') : t('this machine only'))))}</span></h3>
-<div class="desc">${esc(t('A single encrypted file holding your whole vault: the keys, the access log, the bin and your settings. It is created automatically and rewritten at every change, so it is never out of date.'))}</div>
-${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
-<div class="pourquoi">${esc(!exp.path
-    ? t('It could not be written. Choose a location and it starts following the vault.')
-    : (!exp.present
-        ? t('It is no longer where it was left, so it stopped being updated. Choose a location again.')
-        : (exp.portable
-            ? t('Last written {0}. Your recovery phrase opens it on any machine, so a dead disk or a new computer costs you nothing but the time to restore.', whenText(exp.at || exp.at_file))
-            : t('Last written {0}. Only this machine can open it, which covers a deleted or corrupted vault. Create a recovery phrase and the same file opens anywhere.', whenText(exp.at || exp.at_file)))))}</div>
-<div class="actions">
-  <button class="doux" id="expnew">${esc(exp.path ? t('Change location') : t('Create the backup file'))}</button>
-  ${exp.path ? '<button class="doux" id="expoff">' + esc(t('Stop updating')) + '</button>' : ''}
-  <button class="doux" id="expimp">${esc(t('Restore from a file'))}</button>
-</div>
-</div>
-
-<div class="carte${rec.enabled ? '' : ' ko'}">
-<h3>${esc(t('Recovery phrase'))}<span class="pastille">${esc(rec.enabled ? t('active') : t('not set up'))}</span></h3>
-<div class="desc">${esc(t('A list of words, shown once, that unlocks a copy of the master key. It is not stored: keep it offline, away from this machine.'))}</div>
-<div class="pourquoi">${esc(rec.enabled
-    ? t('The master key lives in this machine\'s secret store. Should that store be lost, a wiped profile or a rebuilt account, these words are what brings the vault back.')
-    : t('Without it, losing this machine\'s secret store loses every key, backup file included, since that file is sealed with the same master key. It takes one minute and it is the single most useful thing on this page.'))}</div>
-<div class="actions">
-  <button class="doux" id="recnew">${esc(rec.enabled ? t('Replace the phrase') : t('Create the backup key'))}</button>
-  <button class="doux" id="recuse">${esc(t('Recover with a phrase'))}</button>
-  ${rec.enabled ? '<button class="doux" id="recoff">' + esc(t('Turn it off')) + '</button>' : ''}
-</div>
-</div>
-
-<div class="carte${st.installed && st.upToDate ? '' : ' ko'}">
+<div class="carte${st.installed && st.upToDate ? '' : ' ko'}" id="connexion">
 <h3>${esc(t('Connection to Claude Code'))}<span class="pastille">${esc(st.installed && st.upToDate
     ? t('connected') : (st.installed ? t('older version') : t('not connected')))}</span></h3>
 <div class="desc">${esc(t('Four hooks in Claude Code\'s own configuration, added by a merge that keeps everything else and backs the file up first. Disconnect restores it exactly.'))}</div>
@@ -1015,11 +1145,46 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
 <div class="actions">
   <button class="doux" id="pont">${esc(st.installed ? t('Update the connection') : t('Connect to Claude Code'))}</button>
   <button class="doux" id="jour">${esc(t('Access log'))}</button>
-  <button class="doux" id="rev">${esc(t('Revoke everything'))}</button>
+  <button class="doux danger pousse" id="rev">${esc(t('Revoke everything'))}</button>
 </div>
 </div>
 
-<div class="carte${binned.length ? ' ko' : ''}">
+<div class="carte${rec.enabled ? '' : ' ko'}" id="secours">
+<h3>${esc(t('Recovery phrase'))}<span class="pastille">${esc(rec.enabled ? t('active') : t('not set up'))}</span></h3>
+<div class="desc">${esc(t('A list of words, shown once, that unlocks a copy of the master key. It is not stored: keep it offline, away from this machine.'))}</div>
+<div class="pourquoi">${esc(rec.enabled
+    ? t('The master key lives in this machine\'s secret store. Should that store be lost, a wiped profile or a rebuilt account, these words are what brings the vault back.')
+    : t('Without it, losing this machine\'s secret store loses every key, backup file included, since that file is sealed with the same master key. It takes one minute and it is the single most useful thing on this page.'))}</div>
+<div class="actions">
+  <button class="doux" id="recnew">${esc(rec.enabled ? t('Replace the phrase') : t('Create the backup key'))}</button>
+  <button class="doux" id="recuse">${esc(t('Recover with a phrase'))}</button>
+  ${rec.enabled ? '<button class="doux danger pousse" id="recoff">' + esc(t('Turn it off')) + '</button>' : ''}
+</div>
+</div>
+
+<div class="carte${exp.path && exp.present ? '' : ' ko'}" id="sauvegarde">
+<h3>${esc(t('Backup file'))}<span class="pastille">${esc(!exp.path
+    ? t('none yet')
+    : (!exp.present
+        ? t('file missing')
+        : (exp.portable ? t('portable') : t('this machine only'))))}</span></h3>
+<div class="desc">${esc(t('A single encrypted file holding your whole vault: the keys, the access log, the bin and your settings. It is created automatically and rewritten at every change, so it is never out of date.'))}</div>
+<div class="pourquoi">${esc(!exp.path
+    ? t('It could not be written. Choose a location and it starts following the vault.')
+    : (!exp.present
+        ? t('It is no longer where it was left, so it stopped being updated. Choose a location again.')
+        : (exp.portable
+            ? t('Last written {0}. Your recovery phrase opens it on any machine, so a dead disk or a new computer costs you nothing but the time to restore.', whenText(exp.at || exp.at_file))
+            : t('Last written {0}. Only this machine can open it, which covers a deleted or corrupted vault. Create a recovery phrase and the same file opens anywhere.', whenText(exp.at || exp.at_file)))))}</div>
+${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
+<div class="actions">
+  <button class="doux" id="expnew">${esc(exp.path ? t('Change location') : t('Create the backup file'))}</button>
+  <button class="doux" id="expimp">${esc(t('Restore from a file'))}</button>
+  ${exp.path ? '<button class="doux pousse" id="expoff">' + esc(t('Stop updating')) + '</button>' : ''}
+</div>
+</div>
+
+<div class="carte${binned.length ? ' ko' : ''}" id="corbeille">
 <h3>${esc(t('Bin'))}<span class="pastille">${esc(binned.length
     ? t('{0} waiting', String(binned.length)) : t('empty'))}</span></h3>
 <div class="desc">${esc(t('A deleted key stays encrypted here and Claude cannot use it. Put it back, or destroy it now.'))}</div>
@@ -1028,16 +1193,16 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
     : t('A deleted key waits {0} days before it really goes, so a wrong click costs nothing.', String(vault.TRASH_DAYS)))}</div>
 <div class="actions">
   <button class="doux" id="binshow">${esc(t('Open the bin'))}</button>
-  <button class="doux" id="binempty">${esc(t('Empty the bin'))}</button>
+  <button class="doux danger pousse" id="binempty">${esc(t('Empty the bin'))}</button>
 </div>
 </div>
 </div>
 
-<div class="zone">
+<div class="zone" id="preferences">
 <h2>${esc(t('Preferences'))}</h2>
 <div class="intro">${esc(t('Sensible defaults, changed only if they do not suit you.'))}</div>
 
-<div class="sect">
+<div class="sect" id="usage">
 <h2>${esc(t('Usage tracking'))}</h2>
 <div class="row">
   <div class="name">${esc(t('Refresh interval'))}<span class="reco">${esc(t('Recommended: {0}', intervalLabel(210)))}</span></div>
@@ -1046,7 +1211,7 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
     ${[120, 180, 210, 300, 600, 900, 1800].map(s => '<option value="' + s + '"' +
       (poll === s ? ' selected' : '') + '>' + esc(intervalLabel(s)) + '</option>').join('')}
   </select>
-  <div class="pourquoi">${esc(t('Every VS Code window reads one shared cache, so this is one real call for all of them. At {0} that is about seventeen an hour: often enough to watch a limit fill up well before it bites, and far enough from the rate limit that a busy day never turns into a 429. Below two minutes it will.', intervalLabel(210)))}</div>
+  <div class="pourquoi">${esc(t('Every VS Code window reads one shared cache, so this is one real call for all of them. At {0} that is about seventeen an hour: often enough to watch a limit fill up well before it bites, and far enough from the rate limit that a busy day never turns into a 429. Any faster than two minutes and the polling itself starts drawing them.', intervalLabel(210)))}</div>
 </div>
 <div class="row">
   <label class="toggle"><input type="checkbox" id="pause"${checkedAttr(cl.get('pauseWhenExhausted', true))}>
@@ -1065,7 +1230,7 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
 </div>
 </div>
 
-<div class="sect">
+<div class="sect" id="cles">
 <h2>${esc(t('New keys'))}</h2>
 <div class="row">
   <div class="name">${esc(t('Expiry'))}<span class="reco">${esc(t('Recommended: {0}', t('None')))}</span></div>
@@ -1084,7 +1249,7 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
 </div>
 </div>
 
-<div class="sect">
+<div class="sect" id="affichage">
 <h2>${esc(t('Display'))}</h2>
 <div class="row">
   <label class="toggle"><input type="checkbox" id="sbar"${checkedAttr(cl.get('statusBar', true))}>
@@ -1100,12 +1265,23 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
   <div class="row">
     <div class="name">${esc(t('Status bar style'))}</div>
     <select id="sstyle">
-      ${['prominent', 'classic'].map(v => '<option value="' + v + '"' +
-        (cl.get('statusBarStyle', 'prominent') === v ? ' selected' : '') + '>' +
-        esc(v === 'prominent' ? t('Prominent') : t('VS Code')) +
-        '</option>').join('')}
+      ${[['prominent', t('Prominent')], ['subtle', t('Custom')]]
+        .map(([v, lab]) => '<option value="' + v + '"' +
+        (styleOf(cl) === v ? ' selected' : '') + '>' +
+        esc(lab) + '</option>').join('')}
     </select>
-    <div class="pourquoi">${esc(t('Prominent is a coloured pill at all times, amber then red near a limit. VS Code keeps the plain theme and colours only when a limit fills up.'))}</div>
+    <div class="pourquoi">${esc(t('Prominent is a coloured pill at all times, amber then red near a limit. Custom colours the text only, following the bands below: the background stays the theme\'s, untouched.'))}</div>
+  </div>
+  <div class="row" id="ligne-paliers"${styleOf(cl) === 'subtle' ? '' : ' hidden'}>
+    <div class="name">${esc(t('Colour bands'))}</div>
+    <div class="desc">${esc(t('Where the text colour changes as the session fills up. Drag a boundary, or type the percentage. Only the text takes the colour: the background stays neutral, because VS Code allows nothing else there.'))}</div>
+    <div class="jauge" id="jauge"></div>
+    <div class="echelle"><span>0 %</span><span>100 %</span></div>
+    <div id="paliers"></div>
+    <div class="actions">
+      <button class="doux" id="palPlus">${esc(t('Add a band'))}</button>
+      <button class="doux" id="palDef">${esc(t('Back to defaults'))}</button>
+    </div>
   </div>
   <div class="row">
     <div class="name">${esc(t('Status bar position'))}</div>
@@ -1122,7 +1298,7 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
 </details>
 </div>
 
-<div class="sect">
+<div class="sect" id="langue">
 <h2>${esc(t('Language'))}</h2>
 <div class="row">
   <div class="name">${esc(t('Interface language'))}</div>
@@ -1130,6 +1306,8 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
   <div class="pourquoi">${esc(t('Applies immediately, independently of the VS Code language. Command palette entries are the exception: VS Code resolves those itself, before the extension starts.'))}</div>
 </div>
 </div>
+</div>
+
 </div>
 </div>
 
@@ -1151,9 +1329,188 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
       badge: $('badge').checked,
       statusPos: $('spos').value,
       statusStyle: $('sstyle').value,
+      statusBands: bandes,
       statusWeek: $('sweek').checked
     });
   }
+
+  // ---- colour bands
+  //
+  // One state array, redrawn whole after every change. The gauge, the rows and
+  // the setting are three views of it, and rebuilding beats patching: there is
+  // no path where the bar shows one thing and the saved value says another.
+  var bandes = ${JSON.stringify(bandsOf(cl))};
+  var TEINTES = ${JSON.stringify(bandColorList())};
+
+  function cssVar(id) { return 'var(--vscode-' + id.split('.').join('-') + ')'; }
+
+  function dessineBandes() {
+    var jauge = $('jauge'), lignes = $('paliers');
+    jauge.textContent = ''; lignes.textContent = '';
+    var debut = 0;
+    bandes.forEach(function (b, i) {
+      var seg = document.createElement('div');
+      seg.className = 'seg';
+      seg.style.width = (b.upTo - debut) + '%';
+      seg.style.background = cssVar(b.color);
+      seg.title = debut + ' % - ' + b.upTo + ' %';
+      jauge.appendChild(seg);
+
+      // No handle on the last boundary: it is the end of the scale, not a
+      // setting, and dragging it would only ever mean "hide the top band".
+      if (i < bandes.length - 1) {
+        var p = document.createElement('div');
+        p.className = 'poignee';
+        p.style.left = b.upTo + '%';
+        p.setAttribute('role', 'separator');
+        p.addEventListener('pointerdown', prise(i, p));
+        jauge.appendChild(p);
+      }
+
+      var l = document.createElement('div');
+      l.className = 'palier';
+      var puce = document.createElement('span');
+      puce.className = 'puce'; puce.style.background = cssVar(b.color);
+      var txt = document.createElement('span');
+      txt.className = 'jusqua deb'; txt.textContent = debut + ' % ' + ${JSON.stringify(t('to'))} + ' ';
+      var num = document.createElement('input');
+      num.type = 'number'; num.min = '1'; num.max = '100'; num.value = String(b.upTo);
+      num.disabled = i === bandes.length - 1;
+      num.addEventListener('change', function () { bougeBorne(i, Number(num.value)); });
+      var pct = document.createElement('span');
+      pct.className = 'jusqua'; pct.textContent = '%';
+      var sel = document.createElement('select');
+      TEINTES.forEach(function (c) {
+        var o = document.createElement('option');
+        o.value = c.id; o.textContent = c.nom; o.selected = c.id === b.color;
+        sel.appendChild(o);
+      });
+      sel.addEventListener('change', function () { bandes[i].color = sel.value; dessineBandes(); pushConfig(); });
+      l.appendChild(puce); l.appendChild(txt); l.appendChild(num); l.appendChild(pct); l.appendChild(sel);
+      if (bandes.length > 2) {
+        var x = document.createElement('button');
+        x.className = 'oter'; x.textContent = '×';
+        x.title = ${JSON.stringify(t('Remove this band'))};
+        x.addEventListener('click', function () { oter(i); });
+        l.appendChild(x);
+      }
+      lignes.appendChild(l);
+      debut = b.upTo;
+    });
+    // Compared against -1, not tested for truth: the first band is index 0 and
+    // that is a perfectly good answer.
+    $('palPlus').disabled = bandes.length >= 6 || placeLibre() < 0;
+  }
+
+  // Moving a boundary without rebuilding anything. This matters: during a drag,
+  // recreating the handle would destroy the very node holding the pointer
+  // capture, and the drag would end after a single pixel of travel.
+  function majJauge() {
+    var segs = $('jauge').querySelectorAll('.seg');
+    var mains = $('jauge').querySelectorAll('.poignee');
+    var nums = $('paliers').querySelectorAll('input');
+    var debs = $('paliers').querySelectorAll('.deb');
+    var debut = 0;
+    for (var i = 0; i < bandes.length; i++) {
+      if (segs[i]) {
+        segs[i].style.width = (bandes[i].upTo - debut) + '%';
+        segs[i].title = debut + ' % - ' + bandes[i].upTo + ' %';
+      }
+      if (mains[i]) mains[i].style.left = bandes[i].upTo + '%';
+      if (nums[i]) nums[i].value = String(bandes[i].upTo);
+      if (debs[i]) debs[i].textContent = debut + ' % ' + ${JSON.stringify(t('to'))} + ' ';
+      debut = bandes[i].upTo;
+    }
+  }
+
+  // A boundary can only move between its neighbours, so the bands stay ordered
+  // and none can be squeezed to nothing.
+  function bougeBorne(i, val) {
+    var bas = (i === 0 ? 0 : bandes[i - 1].upTo) + 1;
+    var haut = bandes[i + 1].upTo - 1;
+    bandes[i].upTo = Math.max(bas, Math.min(haut, Math.round(val || 0)));
+    majJauge();
+    pushConfig();
+  }
+
+  function prise(i, el) {
+    return function (ev) {
+      ev.preventDefault();
+      el.classList.add('prise');
+      el.setPointerCapture(ev.pointerId);
+      var jauge = $('jauge');
+      var bouge = function (e) {
+        var r = jauge.getBoundingClientRect();
+        if (!r.width) return;
+        var bas = (i === 0 ? 0 : bandes[i - 1].upTo) + 1;
+        var haut = bandes[i + 1].upTo - 1;
+        var v = Math.round((e.clientX - r.left) / r.width * 100);
+        bandes[i].upTo = Math.max(bas, Math.min(haut, v));
+        majJauge();
+      };
+      var fin = function () {
+        el.classList.remove('prise');
+        el.removeEventListener('pointermove', bouge);
+        el.removeEventListener('pointerup', fin);
+        el.removeEventListener('pointercancel', fin);
+        // Saved on release, not on every pixel: dragging would otherwise write
+        // the settings file eighty times in a second.
+        pushConfig();
+      };
+      el.addEventListener('pointermove', bouge);
+      el.addEventListener('pointerup', fin);
+      el.addEventListener('pointercancel', fin);
+    };
+  }
+
+  // Room for one more only if some band still spans two points: a new one has
+  // to start somewhere the previous does not already end.
+  function placeLibre() {
+    var debut = 0;
+    for (var i = 0; i < bandes.length; i++) {
+      if (bandes[i].upTo - debut >= 2) return i;
+      debut = bandes[i].upTo;
+    }
+    return -1;
+  }
+
+  function ajouter() {
+    var i = placeLibre();
+    if (i < 0 || bandes.length >= 6) return;
+    var debut = i === 0 ? 0 : bandes[i - 1].upTo;
+    var milieu = Math.floor((debut + bandes[i].upTo) / 2);
+    bandes.splice(i, 0, { upTo: milieu, color: bandes[i].color });
+    dessineBandes();
+    pushConfig();
+  }
+
+  // Removing a band hands its range to the one before it, or to the one after
+  // when it was the first: the scale still runs 0 to 100 with nothing missing.
+  function oter(i) {
+    if (bandes.length <= 2) return;
+    bandes.splice(i, 1);
+    bandes[bandes.length - 1].upTo = 100;
+    dessineBandes();
+    pushConfig();
+  }
+
+  // The bands only mean something for the custom style: the prominent pill
+  // imposes its own text colour, so leaving the editor on screen there would be
+  // offering a setting with no effect. Hidden from the server-rendered HTML as
+  // well, so it never flashes into view before this runs.
+  function majVisibilite() {
+    $('ligne-paliers').hidden = $('sstyle').value !== 'subtle';
+  }
+  $('sstyle').addEventListener('change', majVisibilite);
+  majVisibilite();
+
+  $('palPlus').addEventListener('click', ajouter);
+  $('palDef').addEventListener('click', function () {
+    bandes = ${JSON.stringify(defaultBandsOf())};
+    dessineBandes();
+    pushConfig();
+  });
+  dessineBandes();
   function pushDefaults() {
     var v = $('ttl').value;
     api.postMessage({ type: 'defaults', ttlMs: v === 'burn' ? 0 : Number(v),
@@ -1166,6 +1523,49 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
   $('pont').addEventListener('click', function () { api.postMessage({ type: 'connect' }); });
   $('jour').addEventListener('click', function () { api.postMessage({ type: 'audit' }); });
   $('rev').addEventListener('click', function () { api.postMessage({ type: 'revoke' }); });
+
+  // The rail follows the reading position. An observer rather than a scroll
+  // handler: the browser reports what is on screen instead of us recomputing
+  // offsets on every pixel, and a settings page that stutters while scrolling
+  // is worse than one with no map at all.
+  var liens = [].slice.call(document.querySelectorAll('.rail a'));
+  var cibles = liens.map(function (a) { return document.querySelector(a.getAttribute('href')); })
+                    .filter(Boolean);
+  if (cibles.length && window.IntersectionObserver) {
+    var visibles = new Set();
+    var allume = function () {
+      // The topmost visible section wins: scrolling puts several on screen at
+      // once, and the one you are reading is the first of them.
+      var gagnant = null;
+      // Except at the very bottom, where the last sections are on screen for
+      // good: no further scrolling can bring them up into the band, so the rail
+      // would stay stuck two entries behind what you are looking at.
+      if (window.innerHeight + window.scrollY >= document.body.scrollHeight - 2) {
+        gagnant = cibles[cibles.length - 1].id;
+      } else for (var i = 0; i < cibles.length; i++) {
+        if (visibles.has(cibles[i].id)) { gagnant = cibles[i].id; break; }
+      }
+      liens.forEach(function (a) {
+        a.classList.toggle('actif', gagnant !== null && a.getAttribute('href') === '#' + gagnant);
+      });
+    };
+    var obs = new IntersectionObserver(function (entrees) {
+      entrees.forEach(function (e) {
+        if (e.isIntersecting) visibles.add(e.target.id); else visibles.delete(e.target.id);
+      });
+      allume();
+    }, { rootMargin: '-10% 0px -70% 0px', threshold: 0 });
+    cibles.forEach(function (c) { obs.observe(c); });
+    // Only for the bottom case above: the observer says nothing when the page
+    // stops moving against it. Passive, and it does no layout work.
+    window.addEventListener('scroll', allume, { passive: true });
+  }
+  liens.forEach(function (a) {
+    a.addEventListener('click', function () {
+      liens.forEach(function (x) { x.classList.remove('actif'); });
+      a.classList.add('actif');
+    });
+  });
   $('binshow').addEventListener('click', function () { api.postMessage({ type: 'binShow' }); });
   $('binempty').addEventListener('click', function () { api.postMessage({ type: 'binEmpty' }); });
   $('expnew').addEventListener('click', function () { api.postMessage({ type: 'expNew' }); });
