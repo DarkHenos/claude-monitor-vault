@@ -26,6 +26,8 @@ jobs:
         run: node tests/bridge-files.js
       - name: No credential ever enters the repository
         run: node tests/no-secrets.js
+      - name: Translations keep their accents and their placeholders
+        run: node tests/l10n-shape.js
       - name: Translation bundles are aligned
         run: |
           node -e "
