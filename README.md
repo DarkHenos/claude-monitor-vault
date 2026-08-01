@@ -55,14 +55,14 @@ Requires **VS Code 1.106** or newer. Plain JavaScript, no runtime dependencies.
 3. Ask Claude to use it by name:
 
    ```
-   you>  call the Mailjet API with $MAILJET_API_KEY
+   you>  list my private repositories with $GITHUB_TOKEN
    ```
 
    Claude writes a marker into its command; the value is substituted at the last
    moment, out of its view:
 
    ```bash
-   curl -H "Authorization: Bearer {{vault:MAILJET_API_KEY}}" https://api.mailjet.com/v3/...
+   curl -H "Authorization: Bearer {{vault:GITHUB_TOKEN}}" https://api.github.com/user/repos
    ```
 
 4. Press **Create the backup key** in the box above the access log, write down
@@ -147,8 +147,8 @@ one the file could only ever be opened on the machine that wrote it.
 
 - A deleted key waits **30 days in the bin**, still encrypted, and comes back in
   one click. There is an **Undo** on the confirmation itself.
-- Renaming normalises spaces and accents: `mailjet key v2` becomes
-  `MAILJET_KEY_V2`.
+- Renaming normalises spaces and accents: `github key 1` becomes
+  `GITHUB_KEY_1`.
 - Replacing a value never displays the previous one, and keeps the expiry, the
   limits and the authorisations.
 
