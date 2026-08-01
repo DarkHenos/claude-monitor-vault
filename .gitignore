@@ -1,4 +1,4 @@
-# Build artifacts — the .vsix packages are produced by the packaging script
+# Build artifacts: the .vsix packages are produced by the packaging script
 *.vsix
 *.vsix.bak
 
@@ -6,3 +6,30 @@
 # dependency, so nothing here belongs in the repository (97 MB of it).
 node_modules/
 package-lock.json
+
+# What the vault itself writes. None of these belongs in a working tree, but a
+# CLAUDE_CONFIG_DIR pointed here, or an export saved in the wrong folder, would
+# put one right next to the code. An extension whose whole point is not leaking
+# secrets should not be one careless save away from committing its own.
+*.cvault
+vault.json
+masterkey.bin
+recovery.bin
+trash.json
+policy.json
+pending-*.json
+ui-lang.json
+
+# Credentials of any shape
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# OS and editor noise
+.DS_Store
+Thumbs.db

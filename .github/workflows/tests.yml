@@ -24,6 +24,8 @@ jobs:
           node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
       - name: The bridge ships every file it requires
         run: node tests/bridge-files.js
+      - name: No credential ever enters the repository
+        run: node tests/no-secrets.js
       - name: Translation bundles are aligned
         run: |
           node -e "

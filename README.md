@@ -147,7 +147,8 @@ one the file could only ever be opened on the machine that wrote it.
 
 - A deleted key waits **30 days in the bin**, still encrypted, and comes back in
   one click. There is an **Undo** on the confirmation itself.
-- Renaming accepts spaces and accents: `clé api v2` is stored as `CLE_API_V2`.
+- Renaming normalises spaces and accents: `mailjet key v2` becomes
+  `MAILJET_KEY_V2`.
 - Replacing a value never displays the previous one, and keeps the expiry, the
   limits and the authorisations.
 

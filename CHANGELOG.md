@@ -8,9 +8,6 @@ from 1.0.0 onwards.
 
 ## [1.0.0] - 2026-08-01
 
-First stable release. The extension has been on the Marketplace since 0.58.0;
-the numbering restarts here on a semantic base.
-
 ### Added
 
 - Recovery phrase: 17 words, shown once and stored nowhere, that unlock a copy
