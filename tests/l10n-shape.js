@@ -56,6 +56,14 @@ for (const l of LANGS) {
       elided.length ? elided.map(([, v]) => v.slice(0, 50)).join(' | ') : 'clean');
   }
 
+  // A value identical to its English key is a string nobody translated. Short
+  // ones are legitimately identical, "Copy" is "Copy" in no language but proper
+  // nouns and abbreviations are, so only sentences count here. One shipped that
+  // way and only showed up when someone looked at the settings page.
+  const untranslated = Object.keys(en).filter(k => j[k] === k && k.length > 25);
+  check(l + ': no sentence left untranslated', untranslated.length === 0,
+    untranslated.map(k => k.slice(0, 60)).join(' | '));
+
   // A placeholder dropped in translation prints a raw {0} or, worse, nothing.
   const holes = [];
   for (const [k, v] of Object.entries(j)) {

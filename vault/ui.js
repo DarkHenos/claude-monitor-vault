@@ -868,21 +868,69 @@ function activateVault(context, version, onChange) {
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <style>
-  /* A centred, single column like the native VS Code settings editor: sober,
-     generous spacing, one setting per row with its own description. */
-  :root { --line: color-mix(in srgb, var(--vscode-foreground) 12%, transparent); }
+  /* Two zones, and the order is the argument: what saves you comes before what
+     you look at. Protection is a set of cards, each carrying a state, because
+     those are things you check rather than things you tune. Preferences stay a
+     plain column of rows, which is what a settings list should look like.
+
+     Every default that is not obvious says why it is the default. An option
+     nobody can explain is an option nobody dares change. */
+  :root {
+    --line: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+    --carte: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+    --ok: var(--vscode-charts-green);
+    --attention: var(--vscode-charts-yellow);
+  }
   body { font-family: var(--vscode-font-family); font-size: 13px; color: var(--vscode-foreground);
          margin: 0; padding: 0; line-height: 1.45; }
-  .wrap { max-width: 680px; margin: 0 auto; padding: 32px 32px 64px; }
-  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: -.2px; }
-  .sub { font-size: 12.5px; opacity: .6; margin: 0 0 8px; }
-  .sect { margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--line); }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 36px 32px 72px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 5px; letter-spacing: -.3px; }
+  .sub { font-size: 13px; opacity: .6; margin: 0 0 4px; max-width: 62ch; }
+
+  /* Zone: the top-level split, loud enough to be a landmark when scrolling. */
+  .zone { margin-top: 40px; }
+  .zone > h2 { font-size: 15px; font-weight: 600; margin: 0 0 3px; letter-spacing: -.1px; }
+  .zone > .intro { font-size: 12.5px; opacity: .58; margin: 0 0 18px; max-width: 62ch; }
+
+  /* A protection card. The left edge carries the state, so a glance down the
+     page answers "is anything wrong" without reading a word. */
+  .carte { background: var(--carte); border: 1px solid var(--line); border-radius: 8px;
+           border-left: 3px solid var(--ok); padding: 15px 17px; margin-bottom: 12px; }
+  .carte.ko { border-left-color: var(--attention); }
+  .carte > h3 { font-size: 13.5px; font-weight: 600; margin: 0 0 6px;
+                display: flex; align-items: baseline; gap: 9px; }
+  .pastille { font-size: 11.5px; font-weight: 500; opacity: .8; }
+  .carte.ko .pastille { color: var(--attention); opacity: 1; }
+
+  .sect { margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--line); }
   .sect > h2 { font-size: 11px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase;
                opacity: .55; margin: 0 0 16px; }
   .row { margin-bottom: 20px; }
   .row:last-child { margin-bottom: 0; }
   .name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
-  .desc { font-size: 12px; opacity: .6; line-height: 1.5; margin: 2px 0 8px; max-width: 60ch; }
+  .desc { font-size: 12px; opacity: .6; line-height: 1.5; margin: 2px 0 8px; max-width: 62ch; }
+
+  /* Why this default. Set apart from the description because it answers a
+     different question: not what the option does, but why it sits where it
+     sits. */
+  .pourquoi { font-size: 11.5px; line-height: 1.5; margin: 6px 0 0; max-width: 62ch;
+              padding-left: 10px; border-left: 2px solid var(--line); opacity: .62; }
+  .reco { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: .4px;
+          text-transform: uppercase; padding: 1px 6px; border-radius: 3px; margin-left: 8px;
+          color: var(--vscode-charts-green); vertical-align: 1px;
+          border: 1px solid color-mix(in srgb, var(--vscode-charts-green) 40%, transparent); }
+
+  /* Secondary display choices, folded away: four rows of chrome preferences
+     were sitting at the same weight as whether the vault can be recovered. */
+  details { margin-top: 10px; }
+  details > summary { cursor: pointer; font-size: 12px; opacity: .65; list-style: none;
+                      padding: 4px 0; user-select: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: '\\203A'; display: inline-block; margin-right: 7px;
+                              transition: transform .12s ease; }
+  details[open] > summary::before { transform: rotate(90deg); }
+  details > summary:hover { opacity: 1; }
+  details .row { margin-top: 16px; }
   select { font-family: inherit; font-size: 12.5px; padding: 5px 9px; border-radius: 4px; min-width: 260px;
            color: var(--vscode-settings-dropdownForeground, var(--vscode-input-foreground));
            background: var(--vscode-settings-dropdownBackground, var(--vscode-input-background));
@@ -900,12 +948,11 @@ function activateVault(context, version, onChange) {
            border: 1px solid color-mix(in srgb, var(--vscode-foreground) 22%, transparent); }
   button.doux:hover { background: var(--vscode-list-hoverBackground); opacity: 1; }
   button:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
-  .etat { font-size: 12.5px; padding: 10px 13px; border-radius: 4px; margin-bottom: 12px;
-          border-left: 3px solid var(--vscode-charts-green);
-          background: color-mix(in srgb, var(--vscode-charts-green) 8%, transparent); }
-  .etat.ko { border-left-color: var(--vscode-charts-yellow);
-             background: color-mix(in srgb, var(--vscode-charts-yellow) 9%, transparent); }
-  .actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+  /* Kept for the health warnings, which are exceptions and should look like it. */
+  .etat { font-size: 12.5px; padding: 9px 12px; border-radius: 4px; margin: 10px 0 0;
+          border-left: 3px solid var(--attention);
+          background: color-mix(in srgb, var(--vscode-charts-yellow) 9%, transparent); }
+  .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   /* A path is read character by character when something goes wrong, so it gets
      the editor font and room to wrap rather than an ellipsis. */
   .chemin { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px;
@@ -913,127 +960,28 @@ function activateVault(context, version, onChange) {
   .actions button[disabled] { opacity: .4; cursor: not-allowed; }
 </style></head><body>
 <div class="wrap">
-<h1>${esc(t('Claude Monitor'))}</h1>
+<h1>${esc(t('Claude Monitor & Vault'))}</h1>
 <div class="sub">${esc(t('The usage monitor and the vault, in one place.'))}</div>
 
-<div class="sect">
-<h2>${esc(t('Usage tracking'))}</h2>
-<div class="row">
-  <div class="name">${esc(t('Refresh interval'))}</div>
-  <div class="desc">${esc(t('A cache shared across every VS Code window means one real request feeds them all. Going below 2 minutes risks a 429.'))}</div>
-  <select id="poll">
-    ${[120, 180, 210, 300, 600, 900, 1800].map(s => '<option value="' + s + '"' +
-      (poll === s ? ' selected' : '') + '>' + esc(intervalLabel(s)) + '</option>').join('')}
-  </select>
-</div>
-<div class="row">
-  <label class="toggle"><input type="checkbox" id="pause"${checkedAttr(cl.get('pauseWhenExhausted', true))}>
-    <span class="name">${esc(t('Suspend calls when a limit is exhausted'))}</span></label>
-  <div class="desc">${esc(t('Follows the reset time Anthropic reports instead of polling while you are blocked. The refresh button overrides it, which is useful if you unblock your quota another way, with credits for example.'))}</div>
-</div>
-<div class="row">
-  <label class="toggle"><input type="checkbox" id="credits"${checkedAttr(cl.get('showCredits', true))}>
-    <span class="name">${esc(t('Show paid credits'))}</span></label>
-  <div class="desc">${esc(t('Shows spending beyond the plan, in your account currency. The row only appears when extra usage is enabled in your Claude settings, otherwise there is nothing to show.'))}</div>
-</div>
-<div class="row">
-  <label class="toggle"><input type="checkbox" id="alerts"${checkedAttr(cl.get('alerts', true))}>
-    <span class="name">${esc(t('Threshold notifications (80%, 95%, weekly 90%)'))}</span></label>
-</div>
-</div>
+<div class="zone">
+<h2>${esc(t('Protection'))}</h2>
+<div class="intro">${esc(t('What decides whether you get your keys back. Everything here is already set up; these cards are for checking, not for tuning.'))}</div>
 
-<div class="sect">
-<h2>${esc(t('Appearance'))}</h2>
-<div class="row">
-  <label class="toggle"><input type="checkbox" id="sbar"${checkedAttr(cl.get('statusBar', true))}>
-    <span class="name">${esc(t('Show in the status bar'))}</span></label>
-</div>
-<div class="row">
-  <div class="name">${esc(t('Status bar style'))}</div>
-  <div class="desc">${esc(t('Prominent is a coloured pill at all times, amber, red near a limit. VS Code keeps the plain theme and colours only when a limit fills up.'))}</div>
-  <select id="sstyle">
-    ${['prominent', 'classic'].map(v => '<option value="' + v + '"' +
-      (cl.get('statusBarStyle', 'prominent') === v ? ' selected' : '') + '>' +
-      esc(v === 'prominent' ? t('Prominent') : t('VS Code')) +
-      '</option>').join('')}
-  </select>
-</div>
-<div class="row">
-  <div class="name">${esc(t('Status bar position'))}</div>
-  <div class="desc">${esc(t('The status bar has only two sides, VS Code has no centre for it.'))}</div>
-  <select id="spos">
-    <option value="right"${cl.get('statusBarPosition', 'right') === 'right' ? ' selected' : ''}>${esc(t('Right'))}</option>
-    <option value="left"${cl.get('statusBarPosition', 'right') === 'left' ? ' selected' : ''}>${esc(t('Left'))}</option>
-  </select>
-</div>
-<div class="row">
-  <label class="toggle"><input type="checkbox" id="sweek"${checkedAttr(cl.get('statusBarWeek', false))}>
-    <span class="name">${esc(t('Also show the week in the status bar'))}</span></label>
-</div>
-<div class="row">
-  <label class="toggle"><input type="checkbox" id="badge"${checkedAttr(cl.get('badge', true))}>
-    <span class="name">${esc(t('Show the session percentage on the activity-bar icon'))}</span></label>
-</div>
-</div>
-
-<div class="sect">
-<h2>${esc(t('Defaults for new keys'))}</h2>
-<div class="row">
-  <div class="name">${esc(t('Expiry'))}</div>
-  <div class="desc">${esc(t('Pre-fills the panel form. Every key stays editable afterwards.'))}</div>
-  <select id="ttl">
-    ${opt(0, t('None'))}${opt(300000, t('5 minutes'))}${opt(3600000, t('1 hour'))}
-    ${opt(28800000, t('8 hours'))}${opt(86400000, t('24 hours'))}${opt(604800000, t('7 days'))}
-    ${opt('burn', t('Burn after first use'))}
-  </select>
-</div>
-<div class="row">
-  <label class="toggle"><input type="checkbox" id="mcp"${d.mcp ? ' checked' : ''}>
-    <span class="name">${esc(t('Allow new keys for MCP tools'))}</span></label>
-  <div class="desc">${esc(t('Not recommended: in an MCP call the value is placed in the tool arguments and sent to the MCP server, whereas in a shell command it never leaves the memory of the spawned process.'))}</div>
-</div>
-</div>
-
-<div class="sect">
-<h2>${esc(t('Language'))}</h2>
-<div class="row">
-  <div class="name">${esc(t('Interface language'))}</div>
-  <div class="desc">${esc(t('Applies immediately, independently of the VS Code language. Command palette entries are the exception: VS Code resolves those itself, before the extension starts.'))}</div>
-  <select id="lang">${langOptions()}</select>
-</div>
-</div>
-
-<div class="sect">
-<h2>${esc(t('Bin'))}</h2>
-<div class="etat${binned.length ? '' : ' ko'}">
-  ${esc(binned.length
-    ? t('{0} key(s) waiting, oldest {1}', String(binned.length),
-        daysLeft(Math.min.apply(null, binned.map(i => i.expiresIn))))
-    : t('The bin is empty. A deleted key waits {0} days here.', String(vault.TRASH_DAYS)))}
-</div>
-<div class="desc">${esc(t('A deleted key stays encrypted here and Claude cannot use it. Put it back, or destroy it now.'))}</div>
-<div class="actions">
-  <button class="doux" id="binshow">${esc(t('Open the bin'))}</button>
-  <button class="doux" id="binempty">${esc(t('Empty the bin'))}</button>
-</div>
-</div>
-
-<div class="sect">
-<h2>${esc(t('Backup file'))}</h2>
-<div class="etat${exp.path && exp.present ? '' : ' ko'}">
-  ${esc(!exp.path
-    ? t('No backup file yet.')
+<div class="carte${exp.path && exp.present ? '' : ' ko'}">
+<h3>${esc(t('Backup file'))}<span class="pastille">${esc(!exp.path
+    ? t('none yet')
     : (!exp.present
-        ? t('File not found where it was left: it stopped being updated.')
-        : (exp.portable
-            ? t('Up to date, {0}. Portable: your recovery phrase opens it anywhere.',
-                whenText(exp.at || exp.at_file))
-            : t('Up to date, {0}. This machine only, until you create a recovery phrase.',
-                whenText(exp.at || exp.at_file)))))}
-</div>
-${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
+        ? t('file missing')
+        : (exp.portable ? t('portable') : t('this machine only'))))}</span></h3>
 <div class="desc">${esc(t('A single encrypted file holding your whole vault: the keys, the access log, the bin and your settings. It is created automatically and rewritten at every change, so it is never out of date.'))}</div>
-<div class="desc">${esc(t('This machine can always open it, which covers a deleted or corrupted vault. Add a recovery phrase and it opens on any machine, which is what you need when a disk dies or when you move to a new computer. Keep a copy somewhere other than this machine.'))}</div>
+${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
+<div class="pourquoi">${esc(!exp.path
+    ? t('It could not be written. Choose a location and it starts following the vault.')
+    : (!exp.present
+        ? t('It is no longer where it was left, so it stopped being updated. Choose a location again.')
+        : (exp.portable
+            ? t('Last written {0}. Your recovery phrase opens it on any machine, so a dead disk or a new computer costs you nothing but the time to restore.', whenText(exp.at || exp.at_file))
+            : t('Last written {0}. Only this machine can open it, which covers a deleted or corrupted vault. Create a recovery phrase and the same file opens anywhere.', whenText(exp.at || exp.at_file)))))}</div>
 <div class="actions">
   <button class="doux" id="expnew">${esc(exp.path ? t('Change location') : t('Create the backup file'))}</button>
   ${exp.path ? '<button class="doux" id="expoff">' + esc(t('Stop updating')) + '</button>' : ''}
@@ -1041,14 +989,12 @@ ${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
 </div>
 </div>
 
-<div class="sect">
-<h2>${esc(t('Recovery phrase'))}</h2>
-<div class="etat${rec.enabled ? '' : ' ko'}">
-  ${esc(rec.enabled
-    ? t('Active. The phrase reopens this vault if the master key is lost.')
-    : t('Not set up. If the master key is lost, no key can be recovered.'))}
-</div>
+<div class="carte${rec.enabled ? '' : ' ko'}">
+<h3>${esc(t('Recovery phrase'))}<span class="pastille">${esc(rec.enabled ? t('active') : t('not set up'))}</span></h3>
 <div class="desc">${esc(t('A list of words, shown once, that unlocks a copy of the master key. It is not stored: keep it offline, away from this machine.'))}</div>
+<div class="pourquoi">${esc(rec.enabled
+    ? t('The master key lives in this machine\'s secret store. Should that store be lost, a wiped profile or a rebuilt account, these words are what brings the vault back.')
+    : t('Without it, losing this machine\'s secret store loses every key, backup file included, since that file is sealed with the same master key. It takes one minute and it is the single most useful thing on this page.'))}</div>
 <div class="actions">
   <button class="doux" id="recnew">${esc(rec.enabled ? t('Replace the phrase') : t('Create the backup key'))}</button>
   <button class="doux" id="recuse">${esc(t('Recover with a phrase'))}</button>
@@ -1056,19 +1002,133 @@ ${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
 </div>
 </div>
 
-<div class="sect">
-<h2>${esc(t('Connection to Claude Code'))}</h2>
-<div class="etat${st.installed && st.upToDate ? '' : ' ko'}">
-  ${esc(st.installed && st.upToDate
-    ? t('Connected · hooks {0}', installer.EVENTS.join(', '))
-    : (st.installed ? t('Connection established with an older version: update it.')
-                    : t('Not connected: Claude Code cannot read this vault yet.')))}
-</div>
-${issuesText(h.issues).map(i => '<div class="etat ko">' + esc(i.msg) + '</div>').join('')}
+<div class="carte${st.installed && st.upToDate ? '' : ' ko'}">
+<h3>${esc(t('Connection to Claude Code'))}<span class="pastille">${esc(st.installed && st.upToDate
+    ? t('connected') : (st.installed ? t('older version') : t('not connected')))}</span></h3>
+<div class="desc">${esc(t('Four hooks in Claude Code\'s own configuration, added by a merge that keeps everything else and backs the file up first. Disconnect restores it exactly.'))}</div>
+<div class="pourquoi">${esc(st.installed && st.upToDate
+    ? t('Active hooks: {0}. They read metadata only; no hook ever touches the master key.', installer.EVENTS.join(', '))
+    : (st.installed
+        ? t('The connection was made by an earlier version of the extension. Until it is updated, the bridge Claude Code talks to is not the one shipped here.')
+        : t('Claude Code cannot read this vault yet, so a marker written in a command stays a marker.')))}</div>
+${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').join('')}
 <div class="actions">
   <button class="doux" id="pont">${esc(st.installed ? t('Update the connection') : t('Connect to Claude Code'))}</button>
   <button class="doux" id="jour">${esc(t('Access log'))}</button>
   <button class="doux" id="rev">${esc(t('Revoke everything'))}</button>
+</div>
+</div>
+
+<div class="carte${binned.length ? ' ko' : ''}">
+<h3>${esc(t('Bin'))}<span class="pastille">${esc(binned.length
+    ? t('{0} waiting', String(binned.length)) : t('empty'))}</span></h3>
+<div class="desc">${esc(t('A deleted key stays encrypted here and Claude cannot use it. Put it back, or destroy it now.'))}</div>
+<div class="pourquoi">${esc(binned.length
+    ? t('Oldest one leaves in {0}. Deleting the wrong line is the most ordinary accident there is, so nothing goes straight to nowhere.', daysLeft(Math.min.apply(null, binned.map(i => i.expiresIn))))
+    : t('A deleted key waits {0} days before it really goes, so a wrong click costs nothing.', String(vault.TRASH_DAYS)))}</div>
+<div class="actions">
+  <button class="doux" id="binshow">${esc(t('Open the bin'))}</button>
+  <button class="doux" id="binempty">${esc(t('Empty the bin'))}</button>
+</div>
+</div>
+</div>
+
+<div class="zone">
+<h2>${esc(t('Preferences'))}</h2>
+<div class="intro">${esc(t('Sensible defaults, changed only if they do not suit you.'))}</div>
+
+<div class="sect">
+<h2>${esc(t('Usage tracking'))}</h2>
+<div class="row">
+  <div class="name">${esc(t('Refresh interval'))}<span class="reco">${esc(t('Recommended: {0}', intervalLabel(210)))}</span></div>
+  <div class="desc">${esc(t('How often the extension asks Anthropic for your usage figures.'))}</div>
+  <select id="poll">
+    ${[120, 180, 210, 300, 600, 900, 1800].map(s => '<option value="' + s + '"' +
+      (poll === s ? ' selected' : '') + '>' + esc(intervalLabel(s)) + '</option>').join('')}
+  </select>
+  <div class="pourquoi">${esc(t('Every VS Code window reads one shared cache, so this is one real call for all of them. At {0} that is about seventeen an hour: often enough to watch a limit fill up well before it bites, and far enough from the rate limit that a busy day never turns into a 429. Below two minutes it will.', intervalLabel(210)))}</div>
+</div>
+<div class="row">
+  <label class="toggle"><input type="checkbox" id="pause"${checkedAttr(cl.get('pauseWhenExhausted', true))}>
+    <span class="name">${esc(t('Suspend calls when a limit is exhausted'))}</span></label>
+  <div class="pourquoi">${esc(t('On by default: while you are blocked the figures cannot move, so asking again changes nothing and only spends rate limit. It follows the reset time Anthropic reports. The refresh button overrides it, which is what you want if you unblocked yourself another way, with credits for example.'))}</div>
+</div>
+<div class="row">
+  <label class="toggle"><input type="checkbox" id="alerts"${checkedAttr(cl.get('alerts', true))}>
+    <span class="name">${esc(t('Threshold notifications (80%, 95%, weekly 90%)'))}</span></label>
+  <div class="pourquoi">${esc(t('On by default, and fired once per reset window rather than once per open window, so several editors do not mean several notifications.'))}</div>
+</div>
+<div class="row">
+  <label class="toggle"><input type="checkbox" id="credits"${checkedAttr(cl.get('showCredits', true))}>
+    <span class="name">${esc(t('Show paid credits'))}</span></label>
+  <div class="pourquoi">${esc(t('Spending beyond the plan, in your account currency. The row only appears when extra usage is enabled on your Claude account, so leaving this on costs nothing when it does not apply.'))}</div>
+</div>
+</div>
+
+<div class="sect">
+<h2>${esc(t('New keys'))}</h2>
+<div class="row">
+  <div class="name">${esc(t('Expiry'))}<span class="reco">${esc(t('Recommended: {0}', t('None')))}</span></div>
+  <div class="desc">${esc(t('Pre-fills the panel form. Every key stays editable afterwards.'))}</div>
+  <select id="ttl">
+    ${opt(0, t('None'))}${opt(300000, t('5 minutes'))}${opt(3600000, t('1 hour'))}
+    ${opt(28800000, t('8 hours'))}${opt(86400000, t('24 hours'))}${opt(604800000, t('7 days'))}
+    ${opt('burn', t('Burn after first use'))}
+  </select>
+  <div class="pourquoi">${esc(t('No expiry by default, because a key that dies on its own in the middle of a task is a worse surprise than one that lives too long. Set an expiry on the keys where it earns its keep.'))}</div>
+</div>
+<div class="row">
+  <label class="toggle"><input type="checkbox" id="mcp"${d.mcp ? ' checked' : ''}>
+    <span class="name">${esc(t('Allow new keys for MCP tools'))}</span></label>
+  <div class="pourquoi">${esc(t('Off by default, and worth leaving off. In a shell command the value never leaves the memory of the spawned process; in an MCP call it is placed in the tool arguments. Local servers are wrapped so it stays out of the transcript anyway, but a remote one would receive it as an argument. Grant it key by key, in the key menu.'))}</div>
+</div>
+</div>
+
+<div class="sect">
+<h2>${esc(t('Display'))}</h2>
+<div class="row">
+  <label class="toggle"><input type="checkbox" id="sbar"${checkedAttr(cl.get('statusBar', true))}>
+    <span class="name">${esc(t('Show in the status bar'))}</span></label>
+  <div class="pourquoi">${esc(t('A compact figure, always visible, without giving up a side bar to it.'))}</div>
+</div>
+<div class="row">
+  <label class="toggle"><input type="checkbox" id="badge"${checkedAttr(cl.get('badge', true))}>
+    <span class="name">${esc(t('Show the session percentage on the activity-bar icon'))}</span></label>
+</div>
+<details>
+  <summary>${esc(t('More display options'))}</summary>
+  <div class="row">
+    <div class="name">${esc(t('Status bar style'))}</div>
+    <select id="sstyle">
+      ${['prominent', 'classic'].map(v => '<option value="' + v + '"' +
+        (cl.get('statusBarStyle', 'prominent') === v ? ' selected' : '') + '>' +
+        esc(v === 'prominent' ? t('Prominent') : t('VS Code')) +
+        '</option>').join('')}
+    </select>
+    <div class="pourquoi">${esc(t('Prominent is a coloured pill at all times, amber then red near a limit. VS Code keeps the plain theme and colours only when a limit fills up.'))}</div>
+  </div>
+  <div class="row">
+    <div class="name">${esc(t('Status bar position'))}</div>
+    <select id="spos">
+      <option value="right"${cl.get('statusBarPosition', 'right') === 'right' ? ' selected' : ''}>${esc(t('Right'))}</option>
+      <option value="left"${cl.get('statusBarPosition', 'right') === 'left' ? ' selected' : ''}>${esc(t('Left'))}</option>
+    </select>
+  </div>
+  <div class="row">
+    <label class="toggle"><input type="checkbox" id="sweek"${checkedAttr(cl.get('statusBarWeek', false))}>
+      <span class="name">${esc(t('Also show the week in the status bar'))}</span></label>
+    <div class="pourquoi">${esc(t('Off by default: the weekly limit moves slowly, and the panel already shows it.'))}</div>
+  </div>
+</details>
+</div>
+
+<div class="sect">
+<h2>${esc(t('Language'))}</h2>
+<div class="row">
+  <div class="name">${esc(t('Interface language'))}</div>
+  <select id="lang">${langOptions()}</select>
+  <div class="pourquoi">${esc(t('Applies immediately, independently of the VS Code language. Command palette entries are the exception: VS Code resolves those itself, before the extension starts.'))}</div>
+</div>
 </div>
 </div>
 </div>
