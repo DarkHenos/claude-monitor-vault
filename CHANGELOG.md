@@ -2,425 +2,233 @@
 
 All notable changes to **Claude Monitor & Vault**.
 
-## 0.59.0 : 2026-08-01
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
+from 1.0.0 onwards.
 
-**A vault you can get back.** Everything in this release exists because of one
-afternoon: a test run pointed at the real profile instead of a throwaway one and
-called `revokeAll()`, which rotates the master key. Eleven keys became
-unreadable in an instant, and nothing on the machine could bring them back. No
-snapshot, no copy, no second door. The values were gone for good.
+## [1.0.0] - 2026-08-01
 
-- **One encrypted file, kept up to date on its own.** Choose where it goes once
-  and it follows the vault at every change. Everything inside is encrypted, key
-  names included: a vault file leaves the values sealed but shows what they are
-  called, and "this person holds a STRIPE_SECRET_KEY" is not something a file
-  meant to leave the machine should say. Two doors lead to the same master key,
-  the recovery phrase and this machine's own secret store, so re-importing your
-  own file here asks nothing while the same file opens on a computer that has
-  never seen it. Moving to a new machine is the file plus the words. The option
-  stays disabled until a recovery phrase exists, because without one the file
-  could only ever be opened on the machine that wrote it.
-  Restoring says what becomes of the keys already there, and the answer is not
-  the same in both cases. On this machine the master key does not move, so they
-  go to the bin and the import can be undone. From another machine that key is
-  replaced, so they become unreadable for good: the dialog says so before it
-  happens, and offers to save the current vault first.
-- **A bin.** A deleted key waits thirty days, still encrypted, invisible to
-  Claude, and comes back in one click. There is an **Undo** right on the
-  confirmation. An expired key does not go there: an expiry is an instruction
-  you gave, on a schedule you set. The bin has its own signature, so an entry
-  slipped into the file by hand is refused rather than resurrected.
-- **A recovery phrase.** Seventeen words, shown once and stored nowhere, that
-  unlock a copy of the master key if the OS secret store is ever lost: a wiped
-  profile, a reinstalled system, a Windows account rebuilt after a failure. Save
-  them as a `.txt` or copy them, then confirm. Entering them back is tolerant of
-  case, punctuation, and even the first three letters of each word. Once
-  restored, the master key goes back into the secret store, because recovery
-  must not leave you dependent on the phrase.
-- **`revokeAll` now takes a confirmation token.** Nothing in its old signature
-  told "the user pressed the panic button" apart from "a script reached this
-  line". The function that destroyed a real vault can no longer be called by
-  accident.
+First stable release. The extension has been on the Marketplace since 0.58.0;
+the numbering restarts here on a semantic base.
 
-**Keys are easier to live with.**
+### Added
 
-- **Rename a key**, spaces and accents included: typing `clé api v2` shows you
-  live that it will be stored as `CLE_API_V2`. The value never moves, only the
-  label on it.
-- **Replace a value** without ever showing the old one. Expiry, use limits and
-  MCP authorisations are kept.
-- **Marker completion in the editor.** Type `{{vault:` in any file or terminal
-  and your key names are offered. It inserts the marker, which is inert on its
-  own: nothing secret is exposed, the names were already public.
-- **Age and last use on each row**: `used 3 d ago`, or `never used`. A key that
-  is six months old and untouched gets a discreet dot suggesting rotation.
-  Finding out a token is dead from a 401 in production is the expensive way.
-- **Public or secret, per key.** Services publish half of a pair on purpose: a
-  Stripe `pk_`, a Supabase anon key, a captcha sitekey. Those are detected on
-  creation and marked public, which will keep the coming commit guard from
-  crying wolf about them. Detection is deliberately timid, and the name is never
-  a signal: `PUBLIC_KEY` is what half the world calls the counterpart of a
-  private one.
-- **MCP authorisation per server.** A grant used to be all or nothing: a key
-  needed by one server was reachable by every wrapped server. You can now name
-  the servers it may be used in, and it is refused everywhere else.
+- Recovery phrase: 17 words, shown once and stored nowhere, that unlock a copy
+  of the master key when the OS secret store is lost.
+- Encrypted export file (`.cvault`), refreshed automatically at every change,
+  opened by the recovery phrase on any machine.
+- Import of an export file, with or without the phrase depending on the machine.
+- Bin: a deleted key is kept encrypted for 30 days and restored in one click.
+- Key renaming, with spaces and accents normalised.
+- Value replacement, without ever displaying the previous value.
+- Public or secret flag per key, detected at creation for known published forms.
+- MCP authorisation restricted to named servers.
+- Vault terminal: the selected keys arrive as environment variables.
+- Marker completion for `{{vault:` in the editor.
+- Confirmation on every use, enabled per key.
+- Commit guard: warns when a vault secret appears in clear in a saved file or in
+  the staging area.
+- Key age and last use on each row, with a marker on keys unused for six months.
+- Quota consumption projection.
+- Right-click menu on the panel background.
 
-**Three new ways to keep a value out of harm's way.**
+### Changed
 
-- **A vault terminal.** Pick the keys, get a terminal whose environment already
-  holds them, and the `.env` on disk can go. The extension never holds the
-  values: it puts markers in the terminal's environment and launches the same
-  resolver the MCP servers already use. Single-use keys are not offered, since
-  opening the terminal would spend them.
-- **A commit guard.** It answers one question: is one of your own secrets
-  written in clear here? It compares fingerprints, so nothing is decrypted and
-  there are no false positives to train you into ignoring it. It runs when a
-  file is saved and when something is staged, and it warns rather than blocks.
-  Blocking would mean a git hook, and a git hook is triggered by the repository:
-  any project you clone could then ask it whether a string is one of your
-  secrets, as often as it liked. Keys marked public are skipped.
-- **Confirmation on every use, key by key.** Off by default, and the default
-  does not move. Turned on for a key, every use by Claude raises a dialog and
-  the command waits for it. No answer within a minute means refused: a guard
-  that lets things through when nobody is watching is decoration.
+- The access log and connection state are pinned to the bottom of the panel
+  instead of following the key list.
+- A key restored from the bin keeps its original name when free, otherwise takes
+  the `RECOVERY_` prefix.
+- Importing moves the replaced keys to the bin when the master key does not
+  change, and reports the loss when it does.
+- `revokeAll` requires an explicit confirmation token.
+- Marker completion and the save watcher are registered independently, so a
+  failure in either cannot disable the extension.
 
-**The panel.**
+### Fixed
 
-- The access log and the connection state are **pinned to the bottom of the
-  window** instead of being appended to the key list, where they drifted with
-  its length and vanished entirely when the vault was empty or disconnected.
-- **Right-click on the background** opens a menu: new key, log, connection,
-  settings, refresh. Input fields keep the native menu, because without it there
-  is no paste, and pasting is how a key value gets in.
-- **Rename** and **Replace the value** are in the key menu, which was three
-  separate menus that had drifted apart.
-- **A consumption projection.** With enough samples the slope says when a quota
-  runs out, shown as `full ≈ 17:40`, and only when the ceiling lands before the
-  window resets. It stays quiet otherwise: a projection that cries wolf gets
-  ignored, and then the one that mattered gets ignored too.
+- The bridge refused every key: `core.js` had gained a dependency missing from
+  the file list copied by the installer.
+- A key restricted to one MCP server was usable by all of them on the hook path,
+  only stdio servers going through the proxy.
+- An approved replacement widened an MCP authorisation to every server and
+  re-derived the key's visibility.
+- An import by phrase left the local recovery envelope pointing at the replaced
+  key.
+- A pending replacement outlived the deletion or the manual replacement of its
+  key.
+- A key could be deleted by name collision when VS Code closed.
+- The commit guard did not detect the `VARIABLE=value` form.
+- A key restored from the bin overwrote a live key sharing its identifier.
+- 156 interface strings were missing from the four translated languages.
 
-**Fixed.**
+### Security
 
-- **The bridge started refusing every key.** `core.js` gained a dependency on a
-  word list for the recovery phrase, and the installer copies a hand-written
-  list of files that did not include it. The extension kept working, since it
-  loads from its own folder where the file exists, while the bridge died on
-  load: no hooks, no markers, no MCP, and nothing in the panel said so. The file
-  list is fixed, and a test now walks the requires transitively and loads the
-  bridge from a directory holding only what the installer copies, so the list
-  cannot drift again.
-- **An approved replacement widened an MCP grant.** When Claude proposed a new
-  value and the user approved it, the settings of the old entry were carried
-  over except the list of allowed servers. An absent list means "every server",
-  so a key restricted to one server silently became usable by all of them, on
-  the one path where the value came from Claude. The same omission dropped the
-  public or secret choice, which was then re-derived from the new value.
-- **A key could be deleted by name collision.** Session-scoped keys were tracked
-  by name alone, and nothing removed a name when its key disappeared elsewhere
-  (expiry, a hook burning it, a deletion from the palette). Creating a new key
-  under that name later, then closing VS Code, deleted it inside a silent catch.
-  Tracking is by identity now.
-- **The commit guard was blind to the commonest form of all.** Its tokeniser
-  treated `=` as part of a value, so `API_KEY=secret` matched as one word and
-  fingerprinted to nothing. Found by its own test before it ever shipped.
-- **A key scoped to one MCP server was usable by any of them.** The proxy
-  enforced the restriction, but only stdio servers go through it: an HTTP or SSE
-  server is never wrapped, and the hook that serves them checked only the coarse
-  "allowed for MCP" flag. Both paths ask the same function now.
-- **An import by phrase left the recovery envelope pointing at the old key.**
-  Importing a vault from another machine installs that machine's master key,
-  but the local envelope still wrapped the one it replaced, while the panel kept
-  reporting the phrase as active. Using it afterwards would have restored a key
-  that opens nothing.
-- **A proposal waiting for approval outlived the key it described.** Deleting a
-  key, or replacing its value by hand, left the pending proposal in place.
-  Approving it later overwrote the new value, or brought a deleted key back
-  stripped of its expiry, limits and authorisations, which then made the binned
-  copy unrestorable because the name was taken again. A key coming back from the
-  bin to a name that is taken now returns as `RECOVERY_NAME` instead of being
-  refused: it was sitting there, still decryptable, and refusing to give it back
-  was not an answer. The original name is kept whenever it is free, so markers
-  already written keep working.
-- Two defences added against a vault loaded before a wait and written after it,
-  since a confirmation can now hold an operation open for a minute: the read is
-  redone after the wait, and any write of a vault older than the counter is
-  refused rather than performed.
-- Marker completion and the save watcher are each registered on their own, and
-  forgivingly. Wired in with everything else, a single throw in either reported
-  *Claude Vault unavailable* and took away every command, for an autocomplete.
-- **156 interface strings** were added or brought back into the four translated
-  languages, ten of them falling back to English since before this release.
+- The export file encrypts its entire contents, key names included.
+- The commit guard compares fingerprints and decrypts nothing. It warns without
+  blocking, so as not to expose an oracle any third-party repository could
+  trigger.
+- The `public` and `confirmation` flags are sealed with the entry: editing them
+  in the file breaks decryption instead of disabling the protection.
+- Writing a vault older than the anti-replay counter is refused.
 
-## 0.58.21 : 2026-07-30
+## [0.58.21] - 2026-07-30
 
-- **The extension page shows what the extension looks like.** Three screenshots
-  in the readme: the panel in a window, the panel on its own, and the
-  activity-bar icon with its counter.
-- Fixed how they are laid out. A percentage width is stretched to its container
-  by the Details tab in VS Code, which blew the panel screenshot up to the full
-  width of the page and dropped the floated icon on top of the text. The widths
-  are in pixels now, the cells hold plain HTML rather than markdown, and nothing
-  floats, so GitHub, the Marketplace and that tab render the same page.
-- The images are served from the repository over absolute URLs, so they add
-  nothing to the size of the download.
+### Changed
 
-## 0.58.2 : 2026-07-30
+- Three screenshots in the readme: the panel in a window, the panel on its own,
+  and the activity-bar icon with its counter.
 
-**A fresh install now opens on the real panel.** On a new VS Code profile the
-extension showed a bare two-line list, without progress bars and without the
-vault, and nothing explained why.
+### Fixed
 
-The cause turned out to be a single capital letter. The container was declared
-under **`secondarySideBar`**, the name of the proposed API, while the
-contribution point, finalised in VS Code 1.106, is **`secondarySidebar`**, with
-a lowercase b. Absent from the schema, the key was ignored in silence, the
-container was never created, and VS Code dropped the panel into the **Explorer**
-while saying so in its log at every single window launch. Since the panel
-defaulted to that phantom home, the one entry point a newcomer could see, the
-activity-bar icon on the left, led to a bare list instead. The vault is drawn
-inside the panel, so it went missing along with it.
+- Readme layout: pixel widths instead of percentages, plain HTML in table cells
+  and no floats, so GitHub, the Marketplace and the VS Code Details tab render
+  the same page.
+- Images served from the repository over absolute URLs, so they add nothing to
+  the download.
 
-- **The mirror button finally moves the panel.** Both containers are real now,
-  so the panel genuinely lives next to the chat by default and switches sides in
-  one click. Whichever side is unused has no visible view at all, which is what
-  makes VS Code hide its icon, nothing is duplicated, and nothing has to force
-  it.
-- **The left icon and its counter survive the move.** VS Code hides a container
-  as soon as every one of its views is switched off, and a badge belongs to a
-  view, so something has to stay on the left. That something now lists nothing:
-  a single collapsed line, the summary in its title, the badge on the icon, and
- , unfolded, a sentence saying where the panel went with a link to bring it
-  back. Repeating the panel's own figures underneath it was the duplicate.
-- README brought back in line: it described the old default and promised a
-  click-to-recall gesture that 0.58.0 had removed.
+## [0.58.2] - 2026-07-30
 
-### Vault: nothing can be lost any more
+### Added
 
-- **An interruption could make the whole vault unreadable, permanently.** The
-  replay counter was raised *before* the vault was written, so a crash between
-  the two left the counter one ahead and every later load refused the file as a
-  replay, every secret gone. The counter now moves only once the vault is
-  safely on disk, and the anti-replay guarantee is unchanged for the case it
-  exists to cover.
-- **A passing glitch from the OS keyring silently wrote the master key in the
-  clear.** Saving the vault re-ran the whole protection chain each time, so one
-  hiccup was enough to fall back to `plain`, twice per write on Windows, at
-  that. Updating the counter no longer touches the key material at all.
-- **A missing key file no longer regenerates one in silence**, which made every
-  stored secret undecryptable and then blamed the user for tampering. It now
-  refuses and points to the two deliberate ways out.
-- **The master key no longer travels inside a PowerShell script.** Embedded as
-  a literal, it was captured verbatim by Script Block Logging, the key to the
-  entire vault, in clear, in a persistent Windows event log. It goes through the
-  environment now; the script is a constant.
-- **The panel no longer creates the master key just by being drawn.** On a
-  machine where no secret is ever stored, opening it used to force the key into
-  existence and block the extension host on several system calls.
+- Disconnect command: removes the hooks and restores the MCP servers, keeping
+  the vault and its keys.
+- `claudeLimits.autoConnect` setting, on by default, to stop the extension from
+  writing into Claude Code's configuration at startup.
 
-### The use counter is now enforceable
+### Changed
 
-- **A key capped at *n* uses, or burned after use, could be handed back its
-  spent uses.** The counter, the cap and the expiry date sat outside the file
-  signature, while they are exactly what the expiry and burn decisions read:
-  anyone able to write the vault file could reset `uses` and keep using a key
-  the interface presented as burned. They still could not decrypt anything
-  without the master key, but a limit that can be erased is not a limit. The
-  vault format moves to v2 and signs all three. An existing vault is read with
-  the format it was signed with and migrates on its first write, nothing to do,
-  no key to re-enter.
+- Vault format v2: the use counter, the cap and the expiry date are covered by
+  the file signature. An existing vault is read with the format it was signed
+  with and migrates on its first write.
+- The panel lives in the secondary side bar by default and switches sides in one
+  click. An existing install that never moved it will find it on the left.
 
-### Automatic connection, and how to refuse it
+### Fixed
 
-- Wiring Claude Code on startup is what makes the extension usable without
-  reading anything, so it stays the default. But it writes into another
-  product's configuration, and that should remain a choice: the new
-  **`claudeLimits.autoConnect`** setting turns it off. Off, nothing of Claude
-  Code is touched until you press Connect, and you press it at every start.
-  The setting gates both writes, the hooks and the MCP wrapping.
-
-### Also in this release
-
-- **A way back.** The extension writes into Claude Code's own configuration,
-  hooks, and every local stdio MCP server rewired through its proxy, and
-  nothing undid it: uninstalling left the hooks firing and the servers pointing
-  at a bridge about to vanish. A **Disconnect** command now removes the hooks
-  and restores the servers, keeping the vault and its keys.
-- “Allow for MCP” in the key menu did nothing: it shared its action id with
-  “Use in an MCP server”, so it opened the snippet dialog instead. The
-  authorisation can be granted and revoked again.
+- The container was declared under `secondarySideBar` instead of
+  `secondarySidebar`: absent from the schema, the key was ignored in silence and
+  VS Code dropped the panel into the Explorer, so a fresh profile opened on a
+  bare two-line list.
+- The activity-bar icon and its counter survive moving the panel.
+- "Allow for MCP" opened the snippet dialog instead of granting the
+  authorisation: it shared its action id with "Use in an MCP server".
 - Looking for `node` no longer opens a login shell, and gives up after three
-  seconds. Loading a full shell profile, nvm, rbenv, oh-my-zsh, froze every
-  extension in the process before the first figure was drawn.
-
-- The `User-Agent` sent to Anthropic announced `claude-limits-vscode/0.9`, long
-  after the extension had been renamed and had reached 0.58. It is now read from
-  the manifest, so it can never drift again.
-- The panel no longer flickers from one side to the other at startup. The
-  context key that decides which side hosts it is unset until the extension
-  activates, and it was phrased so that this unset state meant “secondary side
-  bar”. With the new default that would have shown the panel on the right for a
-  moment on every launch, then moved it.
-- Opening the panel could have thrown a `ReferenceError`: the webview provider
-  was registered before the view it draws its header from was created. The order
-  is now explicit.
+  seconds, instead of freezing every extension while a shell profile loaded.
+- The `User-Agent` is read from the manifest instead of announcing
+  `claude-limits-vscode/0.9`.
+- The panel no longer flickers from one side to the other at startup.
+- Opening the panel could throw a `ReferenceError`: the webview provider was
+  registered before the view it reads its header from.
 - Adding a secret through a slow pipe span a CPU core at 100 % until the tool
-  timed out, because the synchronous read loop retried without ever yielding.
-- The MCP snippets offered in the interface used a bare `node`, while the
-  installer writes an absolute path. A VS Code started from the Finder inherits
-  a `PATH` that holds neither a Homebrew node nor an nvm shim, so a copied
-  snippet died with an unexplained `ENOENT`. Both now use the resolved
-  interpreter.
-- Two windows could disagree on the shared cache: change detection keyed on
-  size and modification time alone, which are identical for two same-length
-  writes within the same second on a filesystem with one-second granularity
-  (HFS+, some network mounts). The key now includes the inode, which a rename
-  changes on every write.
-- On Windows, a cache write colliding with another window's read fell straight
-  back to a non-atomic overwrite. It now retries the atomic rename first.
+  timed out.
+- The MCP snippets used a bare `node` while the installer writes an absolute
+  path, which died with `ENOENT` in a VS Code started from the Finder.
+- Shared-cache change detection now includes the inode: size and modification
+  time alone are identical for two same-length writes within the same second.
+- On Windows, a cache write colliding with another window's read retries the
+  atomic rename before falling back.
+- Readme brought back in line with the current default.
 
-An existing install that never moved the panel will find it on the left after
-this update; the mirror button puts it back on the right.
+### Security
 
-## 0.58.1 : 2026-07-29
+- The replay counter is raised only once the vault is safely on disk. Raised
+  first, an interruption between the two left the counter one ahead and every
+  later load refused the file as a replay, losing every secret.
+- Updating the counter no longer re-runs the protection chain, where a single
+  hiccup from the OS keyring silently wrote the master key in the clear.
+- A missing key file is refused instead of silently regenerating one, which made
+  every stored secret undecryptable and then blamed the user for tampering.
+- The master key travels through the environment instead of being embedded in a
+  PowerShell script, where Script Block Logging captured it verbatim into a
+  persistent Windows event log.
+- The panel no longer creates the master key just by being drawn.
+- A key capped in uses or burned after use could be handed back its spent uses
+  by editing the file, since the counter sat outside the signature.
 
-- **Linux: the vault now reaches the OS keyring when the extension host runs
-  with a stripped environment**, started from a desktop launcher, a systemd
-  unit or an SSH session. libsecret talks to the Secret Service over the D-Bus
-  *session* bus, and GDBus only ever reads `DBUS_SESSION_BUS_ADDRESS`. When that
-  variable is missing, the vault now points at the standard systemd user bus,
-  `$XDG_RUNTIME_DIR/bus`, provided the socket is genuinely there. Until now a
-  perfectly healthy keyring simply went unused and the master key silently
-  settled for file permissions, safe, but less protected than it should have
-  been. An environment that already carries the variable is left untouched.
+## [0.58.1] - 2026-07-29
 
-## 0.58.0 : 2026-07-29
+### Fixed
+
+- Linux: the vault reaches the OS keyring when the extension host runs with a
+  stripped environment, started from a desktop launcher, a systemd unit or an
+  SSH session. It now points at `$XDG_RUNTIME_DIR/bus` when
+  `DBUS_SESSION_BUS_ADDRESS` is missing, provided the socket is genuinely there.
+  Until then a healthy keyring simply went unused and the master key settled for
+  file permissions.
+
+## [0.58.0] - 2026-07-29
 
 First public release on the Visual Studio Marketplace.
 
-### Claude usage monitor
+### Added
 
 - Live 5-hour session and weekly usage, read from the official
-  `/api/oauth/usage` endpoint, the same data as Claude Code's `/usage`
-  command, with the same labels.
-- Authentication reuses the local Claude Code OAuth credentials. Nothing but
-  the request to `api.anthropic.com` ever leaves the machine: no telemetry, no
-  analytics, no account of any kind, and no runtime dependency.
-- Activity-bar gauge, status-bar readout, detailed and compact panels, and a
-  numeric badge on the activity-bar icon. The panel can live in the primary or
-  the secondary side bar.
-- One shared cache across every VS Code window: a single real request feeds
-  them all, and each window picks up another window's refresh instantly.
+  `/api/oauth/usage` endpoint, the same data as Claude Code's `/usage` command.
+- Authentication reuses the local Claude Code OAuth credentials. Nothing but the
+  request to `api.anthropic.com` leaves the machine: no telemetry, no analytics,
+  no account, no runtime dependency.
+- Activity-bar gauge, status-bar readout, panel, and a numeric badge on the
+  activity-bar icon.
+- One shared cache across every VS Code window: a single real request feeds them
+  all.
 - Threshold notifications, automatic back-off on HTTP 429 honouring
-  `Retry-After`, and the last known values kept on screen whenever the API is
+  `Retry-After`, and the last known values kept on screen when the API is
   unreachable.
-- Available in English, French, German, Spanish and Portuguese.
+- Claude Vault: an encrypted local vault that lets Claude use a secret without
+  ever seeing its value. AES-256-GCM per entry, HKDF-derived subkeys, and an
+  HMAC over the whole file.
+- English, French, German, Spanish and Portuguese.
 
-### Claude Vault
+### Fixed
 
-- An encrypted local vault that lets Claude *use* a secret without ever seeing
-  its value: you write `$KEY_NAME` in the chat, a `PreToolUse` hook substitutes
-  a single-use token at execution time, and the plaintext never enters the
-  transcript. AES-256-GCM per entry, HKDF-derived subkeys, and an HMAC over the
-  whole file to detect tampering.
-- The vault directory is restricted to the current user (`icacls` on Windows,
-  `chmod 700/600` elsewhere) and every write is atomic, with `fsync`.
-
-### Windows, macOS and Linux now behave the same
-
-Everything below was Windows-only, or plainly broken elsewhere, until this
-release.
-
-- **The master key is held by the operating system's own secret store on all
-  three platforms**: DPAPI on Windows, the login keychain on macOS (via
-  `security`), and libsecret on Linux (via `secret-tool`, GNOME Keyring,
-  KWallet). It used to be written as-is into `~/.claude/vault/masterkey.bin` on
-  macOS and Linux, guarded by file permissions alone, so a copy of the home
-  directory, or a backup of it, was enough to recover every secret. An
-  existing vault migrates automatically, keeping the very same master key:
-  nothing to re-enter, no secret lost.
-- **The OAuth token is now read from the macOS login keychain** when the
-  credentials file is absent. Claude Code keeps its credentials there on macOS,
-  so the extension used to find nothing and display no figure at all on a Mac,
-  permanently, since the shared cache is only written after a successful fetch.
-  The file remains the primary source on every platform.
-- **Hooks and MCP servers now run under a real `node`.** They were launched
-  with `process.execPath`, which inside a VS Code extension host is the
-  *Electron* binary: on macOS and Linux that opens a second editor window
-  instead of running the hook, and on Windows it only worked by accident,
-  through an inherited `ELECTRON_RUN_AS_NODE`. Without that variable the hook
-  printed nothing and exited 0, silently turning the guard and the
-  `{{vault:NAME}}` substitution into no-ops. A real interpreter is now resolved
-  at install time, with a launcher as a fallback when none is on `PATH`.
-- **A keyring that stores its contents in the clear is refused.** A GNOME login
-  keyring unlocked with an empty password, the usual headless workaround,
-  writes secrets unencrypted while the Secret Service API keeps reporting
-  success. The vault now checks the keyring files themselves and falls back to
-  file permissions, with a warning that says so, rather than claiming a
-  protection it does not have.
-- **A protection mode is only adopted after a real round trip**, the key
-  written *and* read back. A keyring that accepts a write without being able to
-  read it back can no longer lock a vault away for good.
-- **Explicit fallback**: with no keyring reachable, Linux without
-  `libsecret-tools`, a container, an SSH session, a locked keyring, the vault
-  keeps working on file permissions and the panel names precisely what is
-  missing.
-- On the three platforms the secret never travels through a command line,
-  readable by any other process of the session: `security` receives its
-  commands on standard input, `secret-tool` reads the secret from its own,
-  as PowerShell already did for DPAPI.
-- `CLAUDE_CONFIG_DIR` is honoured. Hard-coding `~/.claude` meant reading the
-  token, writing the shared cache and installing the hooks in a directory
-  Claude Code never looks at.
-- POSIX permissions fixed: directories were being locked down to `0600`, which
-  strips the execute bit and makes them untraversable. The shared cache is also
-  written `0600` explicitly instead of inheriting a world-readable `0644`.
-- Instant cross-window sync works on macOS again: `fs.watch` does not guarantee
-  a filename there, and those events were being discarded.
-
-### Other fixes
-
-- The activity-bar badge showed **twice its value**. The panel and the gauge
-  share one activity-bar container and VS Code *sums* the numeric badges of a
-  container's views, so 45 % was displayed as 90. The gauge is now the sole
-  carrier, and it shows from startup, instead of appearing only once the icon
-  had been clicked, because a tree view's badge exists from view creation while
-  a webview's only exists once the panel has been opened.
-- Clicking the icon no longer bounces the panel into the secondary side bar;
-  the location you chose is kept.
-- A UTF-8 BOM in `settings.json`, written by PowerShell or older editors, made
-  the parser fail silently and the installer rewrite the file with its own hooks
-  alone, dropping the user's permissions, model and plugins. The BOM is now
-  handled, and a file that genuinely cannot be parsed is refused rather than
-  overwritten.
-- Uninstalling now unwraps the MCP servers before deleting the proxy they point
-  at; they used to be left pointing at a file that no longer existed.
+- The activity-bar badge showed twice its value: VS Code sums the numeric badges
+  of a container's views, and both the panel and the gauge carried one.
+- Clicking the icon no longer bounces the panel into the secondary side bar.
+- A UTF-8 BOM in `settings.json` made the parser fail silently and the installer
+  rewrite the file with its own hooks alone, dropping the user's permissions,
+  model and plugins.
+- Uninstalling unwraps the MCP servers before deleting the proxy they point at.
 - A retrieved secret could be truncated on Windows, where writes to a pipe are
   asynchronous and the process exited without waiting.
-- Refreshing from the panel now repaints the badge, the status bar and the
-  gauge immediately instead of leaving them stale until the next tick.
+- Refreshing from the panel repaints the badge, the status bar and the gauge
+  immediately.
+- POSIX permissions: directories were locked down to `0600`, which strips the
+  execute bit and makes them untraversable.
+- Instant cross-window sync works on macOS again: `fs.watch` does not guarantee
+  a filename there, and those events were discarded.
 
-## Before 0.58.0, never released
+### Security
 
-Nothing was ever published to the Marketplace before this release, so there are
-no upgrade notes to give. Versions 0.1.0 through 0.57.0 were local development
-builds: packaged as a `.vsix` and installed on the author's machine only, with
-the version bumped on virtually every iteration. They had no users other than
-their author.
+- The master key is held by the operating system's secret store on all three
+  platforms: DPAPI on Windows, the login keychain on macOS, libsecret on Linux.
+  It used to be written as-is on macOS and Linux, guarded by file permissions
+  alone, so a copy of the home directory was enough to recover every secret. An
+  existing vault migrates automatically, keeping the same master key.
+- A keyring storing its contents in the clear is refused: a GNOME login keyring
+  unlocked with an empty password writes secrets unencrypted while the Secret
+  Service API keeps reporting success. The vault falls back to file permissions
+  and says so.
+- A protection mode is adopted only after a real round trip, the key written and
+  read back.
+- The secret never travels through a command line on any platform: `security`
+  and `secret-tool` receive it on standard input, as PowerShell already did.
+- Hooks and MCP servers run under a real `node` instead of the Electron binary,
+  which silently turned the guard and the `{{vault:NAME}}` substitution into
+  no-ops on Windows and opened a second editor window elsewhere.
+- The OAuth token is read from the macOS login keychain when the credentials
+  file is absent.
+- `CLAUDE_CONFIG_DIR` is honoured, instead of hard-coding `~/.claude`.
+- The vault directory is restricted to the current user and every write is
+  atomic, with `fsync`.
 
-Version control itself only starts at 0.52.0, earlier builds predate the
-repository. The steps between that first commit and publication were:
+## Prior to 0.58.0
 
-- **0.57.0**, display name settled as “Claude Monitor & Vault”.
-- **0.56.0**, resolve the `package.nls.json` placeholders inside the vsix
-  manifest, so the Marketplace shows the real name and description rather than
-  raw `%ext.displayName%` tokens.
-- **0.55.0**, Marketplace trust links (repository, issue tracker, homepage) and
-  the transparency section of the README.
-- **0.54.0**, the coral logo adopted as the extension icon.
-- **0.53.0**, extension id renamed to `claude-monitor-vault`, the usage monitor
-  having grown a vault alongside it.
-- **0.52.0**, first commit, already carrying the whole extension: usage panel,
-  shared cache, status bar, activity-bar container, vault, its Claude Code hooks
-  and MCP proxy, and the five translations.
-- **0.1.0 – 0.51.0**, the extension taking shape locally, from a single usage
-  readout to the feature set above. No repository, no package, no audience.
+Never published. Versions 0.1.0 through 0.57.0 were local development builds,
+packaged as a `.vsix` and installed on the author's machine only, with the
+version bumped on nearly every iteration. Version control starts at 0.52.0,
+which already carried the whole extension: usage panel, shared cache, status
+bar, activity-bar container, vault, Claude Code hooks, MCP proxy and the five
+translations. The steps to publication were the display name (0.57.0), the
+manifest placeholders resolved inside the vsix (0.56.0), the Marketplace trust
+links (0.55.0), the icon (0.54.0) and the rename to `claude-monitor-vault`
+(0.53.0).
