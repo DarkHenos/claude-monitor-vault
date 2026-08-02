@@ -55,5 +55,7 @@
   "cfg.statusBarBands": "Patamares de cor para o estilo personalizado. Cada patamar vai até à sua percentagem e o seguinte começa aí, por isso não pode haver intervalos nem sobreposições. Só o texto é colorido; o fundo fica intacto. Mais fácil de definir a partir da página de definições da extensão, que desenha a escala.",
   "cfg.statusBarBands.upTo": "A percentagem até à qual este patamar vai. O último é sempre 100.",
   "cfg.statusBarBands.color": "Uma cor do tema, para se manter legível tanto em claro como em escuro.",
-  "cmd.pillColor": "Cores da barra de estado"
+  "cmd.pillColor": "Cores da barra de estado",
+  "cfg.projectionSession": "Mostra quando a sessão de 5 horas será esgotada, com base na inclinação de consumo atual. Desativado por padrão porque a previsão é mais útil apenas quando a inclinação é acentuada.",
+  "cfg.projectionWeek": "Mostra quando o limite semanal será esgotado, com base na inclinação de consumo atual. Desativado por padrão porque os padrões semanais variam muito para previsões confiáveis."
 }

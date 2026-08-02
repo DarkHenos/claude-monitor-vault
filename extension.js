@@ -835,7 +835,7 @@ function activate(context) {
       // resetAt is sent already parsed: the webview no longer has a date to interpret
       rows: last ? last.rows.map(r => ({
         label: r.label, short: r.short, pct: r.pct, level: r.level, resetAt: r.resetAt,
-        hitsAt: projectFull(r)
+        hitsAt: projectFull(r, c)
       })) : [],
       error: last ? last.error : null,
       at: last ? last.at : '',
@@ -869,7 +869,9 @@ function activate(context) {
     }
   }
 
-  function projectFull(r) {
+  function projectFull(r, c) {
+    if (r.short === '5h' && !c.projectionSession) return 0;
+    if (r.short === 'sem' && !c.projectionWeek) return 0;
     const h = HIST[r.short];
     if (!h || h.length < 3 || r.pct >= 100) return 0;
     const span = h[h.length - 1].t - h[0].t;

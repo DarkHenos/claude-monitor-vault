@@ -55,5 +55,7 @@
   "cfg.statusBarBands": "Tramos de color para el estilo personalizado. Cada tramo llega hasta su porcentaje y el siguiente empieza ahí, así que no puede haber huecos ni solapamientos. Solo se colorea el texto; el fondo se deja tal cual. Más fácil de ajustar desde la página de ajustes de la extensión, que dibuja la escala.",
   "cfg.statusBarBands.upTo": "El porcentaje al que llega este tramo. El último siempre es 100.",
   "cfg.statusBarBands.color": "Un color del tema, para que siga siendo legible tanto en claro como en oscuro.",
-  "cmd.pillColor": "Colores de la barra de estado"
+  "cmd.pillColor": "Colores de la barra de estado",
+  "cfg.projectionSession": "Muestra cuándo se agotará la sesión de 5 horas, según la pendiente de consumo actual. Deshabilitado por defecto porque el pronóstico es más útil solo cuando la pendiente es pronunciada.",
+  "cfg.projectionWeek": "Muestra cuándo se agotará el límite semanal, según la pendiente de consumo actual. Deshabilitado por defecto porque los patrones semanales varían demasiado para pronósticos confiables."
 }

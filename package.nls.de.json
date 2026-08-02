@@ -55,5 +55,7 @@
   "cfg.statusBarBands": "Farbstufen für den benutzerdefinierten Stil. Jede Stufe reicht bis zu ihrem Prozentwert und die nächste beginnt dort, Lücken und Überschneidungen sind also ausgeschlossen. Nur der Text wird gefärbt, der Hintergrund bleibt unangetastet. Einfacher über die Einstellungsseite der Erweiterung zu setzen, die die Skala zeichnet.",
   "cfg.statusBarBands.upTo": "Der Prozentwert, bis zu dem diese Stufe reicht. Die letzte ist immer 100.",
   "cfg.statusBarBands.color": "Eine Farbe des Themas, damit sie hell wie dunkel lesbar bleibt.",
-  "cmd.pillColor": "Farben der Statusleiste"
+  "cmd.pillColor": "Farben der Statusleiste",
+  "cfg.projectionSession": "Zeigt an, wann die 5-Stunden-Sitzung basierend auf der aktuellen Verbrauchssteigung erschöpft ist. Standardmäßig deaktiviert, da die Vorhersage nur bei steiler Steigung wirklich nützlich ist.",
+  "cfg.projectionWeek": "Zeigt an, wann das wöchentliche Kontingent erschöpft sein wird, basierend auf der aktuellen Verbrauchssteigung. Standardmäßig deaktiviert, da sich wöchentliche Muster zu sehr unterscheiden für zuverlässige Vorhersagen."
 }

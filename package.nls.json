@@ -55,5 +55,7 @@
   "cfg.statusBarBands": "Colour bands for the custom style. Each band runs up to its percentage and the next one starts there, so gaps and overlaps cannot occur. Only the text is coloured; the background is left alone. Easier to set from the extension settings page, which draws the scale.",
   "cfg.statusBarBands.upTo": "The percentage this band reaches. The last one is always 100.",
   "cfg.statusBarBands.color": "A theme colour, so it stays readable in light and dark alike.",
+  "cfg.projectionSession": "Show when the 5-hour session will be exhausted, based on current consumption slope. Disabled by default because the forecast is most useful only when the slope is steep.",
+  "cfg.projectionWeek": "Show when the weekly limit will be exhausted, based on current consumption slope. Disabled by default because weekly patterns vary too much for reliable forecasting.",
   "cmd.pillColor": "Status bar colours"
 }

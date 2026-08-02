@@ -55,5 +55,7 @@
   "cfg.statusBarBands": "Paliers de couleur pour le style personnalisé. Chaque palier va jusqu'à son pourcentage et le suivant commence là, ni trou ni chevauchement n'est donc possible. Seul le texte est coloré, le fond n'est pas touché. Plus simple à régler depuis la page des paramètres de l'extension, qui dessine l'échelle.",
   "cfg.statusBarBands.upTo": "Le pourcentage auquel ce palier va. Le dernier vaut toujours 100.",
   "cfg.statusBarBands.color": "Une couleur du thème, elle reste donc lisible en clair comme en sombre.",
-  "cmd.pillColor": "Couleurs de la barre d'état"
+  "cmd.pillColor": "Couleurs de la barre d'état",
+  "cfg.projectionSession": "Affiche quand la session de 5 heures sera épuisée, selon la pente actuelle de consommation. Désactivé par défaut parce que la prédiction n'est vraiment utile que si la pente est raide.",
+  "cfg.projectionWeek": "Affiche quand le quota hebdomadaire sera épuisé, selon la pente actuelle de consommation. Désactivé par défaut parce que les modèles hebdomadaires varient trop pour des prédictions fiables."
 }

@@ -492,6 +492,16 @@
           "type": "boolean",
           "default": true,
           "description": "%cfg.showCredits%"
+        },
+        "claudeLimits.projectionSession": {
+          "type": "boolean",
+          "default": false,
+          "description": "%cfg.projectionSession%"
+        },
+        "claudeLimits.projectionWeek": {
+          "type": "boolean",
+          "default": false,
+          "description": "%cfg.projectionWeek%"
         }
       }
     },
