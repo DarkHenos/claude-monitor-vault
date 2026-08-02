@@ -2,7 +2,7 @@
   "name": "claude-monitor-vault",
   "displayName": "%ext.displayName%",
   "description": "%ext.description%",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "l10n": "./l10n",
   "publisher": "alexossart",
   "license": "MIT",
@@ -385,20 +385,10 @@
           "minimum": 120,
           "description": "%cfg.pollSeconds%"
         },
-        "claudeLimits.alerts": {
+        "claudeLimits.autoConnect": {
           "type": "boolean",
           "default": true,
-          "description": "%cfg.alerts%"
-        },
-        "claudeLimits.statusBar": {
-          "type": "boolean",
-          "default": true,
-          "description": "%cfg.statusBar%"
-        },
-        "claudeLimits.badge": {
-          "type": "boolean",
-          "default": true,
-          "description": "%cfg.badge%"
+          "description": "%cfg.autoConnect%"
         },
         "claudeLimits.location": {
           "type": "string",
@@ -409,10 +399,25 @@
           "default": "secondarySidebar",
           "description": "%cfg.location%"
         },
-        "claudeLimits.autoConnect": {
+        "claudeLimits.alerts": {
           "type": "boolean",
           "default": true,
-          "description": "%cfg.autoConnect%"
+          "description": "%cfg.alerts%"
+        },
+        "claudeLimits.pauseWhenExhausted": {
+          "type": "boolean",
+          "default": true,
+          "description": "%cfg.pauseWhenExhausted%"
+        },
+        "claudeLimits.showCredits": {
+          "type": "boolean",
+          "default": true,
+          "description": "%cfg.showCredits%"
+        },
+        "claudeLimits.statusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "%cfg.statusBar%"
         },
         "claudeLimits.statusBarPosition": {
           "type": "string",
@@ -439,10 +444,22 @@
         "claudeLimits.statusBarBands": {
           "type": "array",
           "default": [
-            { "upTo": 50, "color": "descriptionForeground" },
-            { "upTo": 75, "color": "foreground" },
-            { "upTo": 90, "color": "charts.yellow" },
-            { "upTo": 100, "color": "charts.red" }
+            {
+              "upTo": 50,
+              "color": "descriptionForeground"
+            },
+            {
+              "upTo": 75,
+              "color": "foreground"
+            },
+            {
+              "upTo": 90,
+              "color": "charts.yellow"
+            },
+            {
+              "upTo": 100,
+              "color": "charts.red"
+            }
           ],
           "minItems": 2,
           "maxItems": 6,
@@ -483,16 +500,6 @@
           "default": false,
           "description": "%cfg.statusBarWeek%"
         },
-        "claudeLimits.pauseWhenExhausted": {
-          "type": "boolean",
-          "default": true,
-          "description": "%cfg.pauseWhenExhausted%"
-        },
-        "claudeLimits.showCredits": {
-          "type": "boolean",
-          "default": true,
-          "description": "%cfg.showCredits%"
-        },
         "claudeLimits.projectionSession": {
           "type": "boolean",
           "default": false,
@@ -502,6 +509,11 @@
           "type": "boolean",
           "default": false,
           "description": "%cfg.projectionWeek%"
+        },
+        "claudeLimits.badge": {
+          "type": "boolean",
+          "default": true,
+          "description": "%cfg.badge%"
         }
       }
     },

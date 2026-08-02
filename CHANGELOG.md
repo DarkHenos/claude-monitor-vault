@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from 1.0.0 onwards.
 
+## [1.0.1] - 2026-08-02
+
+### Changed
+
+- Projection (when quota will be exhausted) disabled by default: `projectionSession` and `projectionWeek` are both false, can be toggled individually.
+- Settings in manifest reorganised for clarity: status bar options now grouped together.
+
+### Fixed
+
+- Weekly projection kept off by default since usage patterns vary too much for reliable forecasting.
+
 ## [1.0.0] - 2026-08-01
 
 ### Added
