@@ -248,6 +248,9 @@ function activateVault(context, version, onChange) {
         : s.expiresAt ? when(s.expiresAt) : t('none')),
       t('MCP tools: {0}', s.mcp ? t('allowed') : t('not allowed'))
     ];
+    const codexAccess = vscode.workspace.getConfiguration('agentBridge').get('codexVaultAccess', 'claude');
+    const codexAllowed = !s.expired && vault.mcpAllows(codexAccess === 'claude' ? { ...s, mcp: true } : s, 'claude-monitor-vault');
+    lines.push('ChatGPT / Codex: ' + (codexAllowed ? t('allowed') : t('not allowed')));
     const edit = t('Edit description');
     const act = await vscode.window.showInformationMessage(
       s.name,
@@ -658,6 +661,7 @@ function activateVault(context, version, onChange) {
   async function pickMcpScope(s) {
     let names = [];
     try { names = installer.serverNames(); } catch (e) { /* no config yet */ }
+    if (!names.includes('claude-monitor-vault')) names.push('claude-monitor-vault');
     if (!names.length) return [];                    // nothing to choose between
     const all = t('Every MCP server');
     const some = t('Only certain servers…');
@@ -733,6 +737,7 @@ function activateVault(context, version, onChange) {
   // ones, inferred only where the code path allows a single author (a use is
   // always the agent, a reveal always the owner), left blank otherwise.
   function actorOf(e) {
+    if (e.by === 'codex') return 'Codex';
     if (e.by === 'claude') return 'Claude';
     if (e.by === 'user') return t('you');
     if (e.event === 'use' || e.event === 'replace-request') return 'Claude';
@@ -851,7 +856,9 @@ function activateVault(context, version, onChange) {
   // ---------------------------------------------------------- settings window
 
   let settingsPanel = null;
-  function showSettings() {
+  let codexConnection = {configured:false,providers:['claude','codex']};
+  async function showSettings() {
+    try { codexConnection = await vscode.commands.executeCommand('agentBridge.connectionStatus') || codexConnection; } catch (_) {}
     if (settingsPanel) {
       settingsPanel.webview.html = settingsHtml();
       settingsPanel.reveal(vscode.ViewColumn.Active);
@@ -863,6 +870,22 @@ function activateVault(context, version, onChange) {
     settingsPanel.webview.html = settingsHtml();
     settingsPanel.webview.onDidReceiveMessage(m => {
       if (!m) return;
+      if (m.type === 'codexConnect' || m.type === 'codexDisconnect') {
+        vscode.commands.executeCommand(m.type === 'codexConnect' ? 'agentBridge.connectVault' : 'agentBridge.disconnectVault')
+          .then(()=>showSettings()).catch(e=>vscode.window.showErrorMessage(e.message));
+        return;
+      }
+      if (m.type === 'companionSetting') {
+        const valid = (m.key === 'quotaDisplay' && ['auto','claude','codex','both'].includes(m.value))
+          || (m.key === 'codexVaultAccess' && ['claude','mcp'].includes(m.value))
+          || (m.key === 'codexAutoSetup' && typeof m.value === 'boolean');
+        const colors = require('../companion/colors').allowed;
+        const colorValid = (m.key === 'codexColorStyle' && ['thresholds','custom'].includes(m.value))
+          || (['codexNormalColor','codexWarningColor','codexCriticalColor'].includes(m.key) && colors.includes(m.value));
+        if (valid || colorValid) vscode.workspace.getConfiguration('agentBridge').update(m.key,m.value,vscode.ConfigurationTarget.Global)
+          .catch(e=>vscode.window.showErrorMessage(e.message));
+        return;
+      }
       if (m.type === 'defaults') {
         setDefaults(m);
         vscode.window.setStatusBarMessage(t('Defaults saved'), 3000);
@@ -1104,17 +1127,13 @@ function activateVault(context, version, onChange) {
 
 <div class="rail">
   <div class="tete">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="#D97757" stroke-width="1.5"
-       stroke-linecap="round" stroke-linejoin="round"
-       transform="translate(12 12) scale(1.3) translate(-12 -12)">
-      <path d="M4 15.5a8 8 0 0 1 16 0"/><path d="M12 15.5V8.6"/><path d="M12 15.5 8.9 12.4"/>
-      <path d="M12 15.5 15.1 12.4"/><path d="M12 15.5H8.3"/><path d="M12 15.5H15.7"/>
-    </g></svg>
-    <h1>${esc(t('Claude Monitor & Vault'))}</h1>
+    ${require('../companion/branding').logo}
+    <h1>Claude Monitor &amp; Vault + ChatGPT</h1>
   </div>
   <nav>
     <div class="groupe">${esc(t('Protection'))}</div>
-    <a href="#connexion">${esc(t('Connection to Claude Code'))}</a>
+    <a href="#connexion" ${codexConnection.providers.includes('claude')?'':'hidden'}>${esc(t('Connection to Claude Code'))}</a>
+    <a href="#codex-connection">ChatGPT / Codex</a>
     <a href="#secours">${esc(t('Recovery phrase'))}</a>
     <a href="#sauvegarde">${esc(t('Backup file'))}</a>
     <a href="#corbeille">${esc(t('Bin'))}</a>
@@ -1127,12 +1146,13 @@ function activateVault(context, version, onChange) {
 </div>
 
 <div class="corps">
+${require('../companion/settings').html(vscode.workspace.getConfiguration('agentBridge'))}
 
 <div class="zone" id="protection">
 <h2>${esc(t('Protection'))}</h2>
 <div class="intro">${esc(t('What decides whether you get your keys back. Everything here is already set up; these cards are for checking, not for tuning.'))}</div>
 
-<div class="carte${st.installed && st.upToDate ? '' : ' ko'}" id="connexion">
+<div class="carte${st.installed && st.upToDate ? '' : ' ko'}" id="connexion" ${codexConnection.providers.includes('claude')?'':'hidden'}>
 <h3>${esc(t('Connection to Claude Code'))}<span class="pastille">${esc(st.installed && st.upToDate
     ? t('connected') : (st.installed ? t('older version') : t('not connected')))}</span></h3>
 <div class="desc">${esc(t('Four hooks in Claude Code\'s own configuration, added by a merge that keeps everything else and backs the file up first. Disconnect restores it exactly.'))}</div>
@@ -1147,6 +1167,14 @@ ${issuesText(h.issues).map(i => '<div class="etat">' + esc(i.msg) + '</div>').jo
   <button class="doux" id="jour">${esc(t('Access log'))}</button>
   <button class="doux danger pousse" id="rev">${esc(t('Revoke everything'))}</button>
 </div>
+</div>
+
+<div class="carte" id="codex-connection">
+<h3>ChatGPT / Codex <span class="pastille">${esc(codexConnection.configured?t('Configuration ready'):t('Not connected'))}</span></h3>
+<div class="desc">${esc(t('Codex loads project context and local vault tools when a new session starts.'))}</div>
+${codexConnection.error?'<div class="etat">'+esc(codexConnection.error)+'</div>':''}
+<div class="actions"><button class="doux" id="codexConnect">${esc(t('Connect Codex to the vault'))}</button>
+<button class="doux" id="codexDisconnect" ${codexConnection.configured?'':'disabled'}>${esc(t('Disconnect'))}</button></div>
 </div>
 
 <div class="carte${rec.enabled ? '' : ' ko'}" id="secours">
@@ -1315,6 +1343,10 @@ ${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
 (function () {
   'use strict';
   var api = acquireVsCodeApi();
+  document.getElementById('codexConnect').onclick=function(){api.postMessage({type:'codexConnect'});};
+  document.getElementById('codexDisconnect').onclick=function(){api.postMessage({type:'codexDisconnect'});};
+  document.addEventListener('change',function(e){if(e.target.getAttribute('data-companion-setting')==='codexColorStyle')document.getElementById('codex-custom-colors').hidden=e.target.value!=='custom';});
+  document.addEventListener('change',function(e){var key=e.target.getAttribute('data-companion-setting');if(key)api.postMessage({type:'companionSetting',key:key,value:e.target.type==='checkbox'?e.target.checked:e.target.value});});
   var $ = function (id) { return document.getElementById(id); };
 
   // Apply on change, like the native settings editor: no Save button to hunt for.

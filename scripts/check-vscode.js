@@ -1,0 +1,36 @@
+'use strict';
+// Optional real Extension Development Host smoke test with isolated home/storage.
+const fs=require('fs'),os=require('os'),path=require('path'),{spawn}=require('child_process');
+const root=path.resolve(__dirname,'..');
+const temp=fs.mkdtempSync(path.join(os.tmpdir(),'monitor-host-'));
+const extension=path.join(temp,'extension'),project=path.join(temp,'project'),home=path.join(temp,'home');
+for(const dir of [extension,project,home,path.join(home,'.claude'),path.join(home,'.codex')])fs.mkdirSync(dir,{recursive:true});
+for(const name of fs.readdirSync(root))if(/^(extension\.js|i18n\.js|package.*\.json|icon\.png)$/.test(name))fs.copyFileSync(path.join(root,name),path.join(extension,name));
+for(const name of ['companion','vault','l10n','media'])fs.cpSync(path.join(root,name),path.join(extension,name),{recursive:true});
+const manifest=JSON.parse(fs.readFileSync(path.join(extension,'package.json')));manifest.main='./bootstrap.js';fs.writeFileSync(path.join(extension,'package.json'),JSON.stringify(manifest));
+fs.writeFileSync(path.join(extension,'bootstrap.js'),`require('os').homedir=()=>process.env.MONITOR_TEST_HOME;module.exports=require('./extension.js');`);
+const test=path.join(temp,'test.cjs');
+fs.writeFileSync(test,`const vscode=require('vscode'),fs=require('fs'),path=require('path'),assert=require('assert/strict');
+exports.run=async()=>{
+ const c=vscode.workspace.getConfiguration('agentBridge');
+ await c.update('updateNotice','off',true);await c.update('codexExecutable',process.env.MONITOR_TEST_NODE,true);
+ await c.update('quotaDisplay','codex',true);await c.update('codexAutoSetup',true,true);
+ await vscode.extensions.getExtension('alexossart.claude-monitor-vault').activate();
+ const root=vscode.workspace.workspaceFolders[0].uri.fsPath;
+ for(let i=0;i<80&&!fs.existsSync(path.join(root,'.codex/config.toml'));i++)await new Promise(r=>setTimeout(r,100));
+ assert.ok(fs.readFileSync(path.join(root,'AGENTS.md'),'utf8').includes('vault_run'));
+ assert.ok(fs.readFileSync(path.join(root,'.codex/config.toml'),'utf8').includes('--access'));
+ await vscode.commands.executeCommand('claudeLimits.open');
+ await vscode.commands.executeCommand('claudeVault.settings');
+ await new Promise(r=>setTimeout(r,500));
+ assert.ok(vscode.window.tabGroups.all.some(g=>g.tabs.some(t=>/settings/i.test(t.label))));
+ fs.writeFileSync(process.env.MONITOR_TEST_REPORT,'PASS real VS Code activation, automatic context/MCP setup, quota panel and settings');
+};`);
+const code=process.env.MONITOR_CODE_EXECUTABLE||path.join(process.env.LOCALAPPDATA,'Programs/Microsoft VS Code/Code.exe');
+const report=path.join(temp,'report.txt');
+const env={...process.env,MONITOR_TEST_HOME:home,MONITOR_TEST_NODE:process.execPath,MONITOR_TEST_REPORT:report,CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude')};delete env.ELECTRON_RUN_AS_NODE;
+const child=spawn(code,['--user-data-dir',path.join(temp,'user'),'--extensions-dir',path.join(temp,'extensions'),'--extensionDevelopmentPath='+extension,'--extensionTestsPath='+test,'--locale=en','--disable-extensions','--disable-workspace-trust','--skip-welcome','--skip-release-notes',project],{env,windowsHide:true,stdio:['ignore','pipe','pipe']});
+let log='';for(const stream of [child.stdout,child.stderr])stream.on('data',c=>{log=(log+c).slice(-12000);});
+const timeout=setTimeout(()=>child.kill(),55000);
+child.on('error',e=>{console.error(e.message);process.exitCode=1;});
+child.on('close',code=>{clearTimeout(timeout);if(code===0&&fs.existsSync(report))console.log(fs.readFileSync(report,'utf8'));else{console.error(log);process.exitCode=1;}fs.rmSync(temp,{recursive:true,force:true,maxRetries:5,retryDelay:200});});

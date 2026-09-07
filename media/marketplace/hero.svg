@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1200" height="420" viewBox="0 0 1200 420"><rect width="1200" height="420" fill="#141c24"/><g font-family="Segoe UI, Arial, sans-serif"><text x="64" y="68" fill="#d9977e" font-size="19" font-weight="600">CLAUDE MONITOR &amp; VAULT</text><text x="64" y="144" fill="#f2f4f6" font-size="55" font-weight="600">Your assistants.</text><text x="64" y="207" fill="#f2f4f6" font-size="55" font-weight="600">One familiar workspace.</text><text x="64" y="264" fill="#a8b6c4" font-size="26" font-weight="400">Claude Code + ChatGPT / Codex</text><path d="M64 307H1136V307" stroke="#3c4854" stroke-width="2" fill="none"/><text x="64" y="360" fill="#d9977e" font-size="17" font-weight="600">QUOTAS</text><text x="260" y="360" fill="#6ec5b4" font-size="17" font-weight="600">PROJECT MEMORY</text><text x="560" y="360" fill="#bbc3cb" font-size="17" font-weight="600">LOCAL VAULT</text><text x="1020" y="360" fill="#bbc3cb" font-size="18" font-weight="400">v1.1.0</text><svg x="938" y="95" width="190" height="190" viewBox="0 0 128 128">
+  <title>Claude Monitor &amp; Vault + ChatGPT</title>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M16 62a48 48 0 0 1 96 0" stroke="#D97757" stroke-width="11"/>
+    <path d="M64 34v6M39 44l4 4M89 44l-4 4" stroke="#D97757" stroke-width="5"/>
+    <path d="M64 62l17-13" stroke="#D97757" stroke-width="8"/>
+    <circle cx="64" cy="62" r="6" fill="#D97757"/>
+    <path d="M58 82c-15-15-36-5-36 12s21 27 36 12" stroke="#D97757" stroke-width="11"/>
+    <path d="M70 82c15-15 36-5 36 12s-21 27-36 12" stroke="#62B5A5" stroke-width="11"/>
+    <path d="M64 95v7" stroke="#62B5A5" stroke-width="5"/>
+    <circle cx="64" cy="92" r="4" fill="#62B5A5"/>
+  </g>
+</svg>
+</g></svg>

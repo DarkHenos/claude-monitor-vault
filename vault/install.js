@@ -32,7 +32,7 @@ const MARKER = 'claude-vault-bridge';     // lets us find OUR entries
 // hook, every marker and every MCP call. tests/bridge-files.js keeps this
 // list honest by walking the requires.
 const FILES = ['core.js', 'wordlist.js', 'hook.js', 'get.js', 'list.js',
-               'add.js', 'env.js', 'mcp-proxy.js'];
+               'add.js', 'env.js', 'mcp-proxy.js', 'stream-redactor.js'];
 const SHIMS = { win32: 'node-shim.cmd', posix: 'node-shim.sh' };
 const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse'];
 

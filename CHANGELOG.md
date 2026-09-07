@@ -6,6 +6,62 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from 1.0.0 onwards.
 
+## [1.1.0] - 2026-09-07 (preview)
+
+### Added
+
+- Automatic Codex context and vault setup in trusted projects, with backups,
+  dirty-file protection and a persistent disconnect choice.
+- Active-tab and terminal detection, followed by project and client signals.
+- Shared quota bar components with a distinct Codex colour, the current logo in
+  settings and the quota toolbar, and integrated assistant settings.
+- Configurable Claude-equivalent or MCP-only vault access for Codex, preserving
+  expiry, confirmation, use limits and named-server restrictions.
+- A redesigned Marketplace and GitHub overview with branded illustrations,
+  an annotated quota panel, a linked-memory diagram and a separate user guide.
+- Release checks for version consistency and documentation assets before packaging.
+- A single quota panel with Automatic, Claude, ChatGPT / Codex and Both display
+  modes. Monitoring starts when selected; assistant actions live in a compact menu.
+- Corrected corrupted accented translations and added encoding regression checks.
+- A localized What's New page, shown once per version, with feature shortcuts,
+  an opt-out and a notification fallback. Reopen it from the command palette.
+- A refreshed terracotta-and-teal gauge/link logo, with a monochrome sidebar
+  version and raster assets rendered from a maintained SVG source.
+- Recursive memory-index scanning: linked Markdown files with arbitrary names,
+  imports, inventory counts, missing-reference reports, cycle detection and
+  portable linked-file snapshots with rewritten paths.
+- Optional ChatGPT / Codex account quotas through Codex App Server, dynamic quota
+  windows, last-update information, configurable alerts and a model catalog.
+- Assistants & Memory view: launch Claude Code or Codex with a selected model in
+  a project terminal. Existing chat sessions remain independent.
+- Shared `.agent-bridge/MEMORY.md` with managed references in `CLAUDE.md` and
+  `AGENTS.md`, explicit Markdown imports, preview, backups and conflict detection.
+- Project-scoped Codex MCP vault connection with metadata listing and execution
+  using secrets in environment variables, buffered and redacted output.
+- Tests for synchronization, restoration, MCP configuration, model selection,
+  JSON-RPC, UTF-8 framing and split-secret log redaction.
+
+### Changed
+
+- Display name: **Claude Monitor & Vault + ChatGPT**. Existing Marketplace ID,
+  Claude settings, command IDs and encrypted vault location are preserved.
+- Vault, assistant launch and memory operations require workspace trust.
+- Codex accesses are identified in the vault audit log.
+
+### Fixed
+
+- Replaced the Claude-only footer connection shortcut with Assistant settings,
+  including dedicated Codex connection and disconnection controls.
+- Aligned Codex warning and critical thresholds with Claude (70% and 90%) and
+  added standard and custom quota colour modes.
+- Published presentation assets alongside the README so packaged HTTPS image
+  links resolve from the installed extension's Details page.
+- MCP stderr redaction now handles secrets split across log chunks. Patterns are
+  retained for late output until proxy shutdown, with a bounded capacity.
+- Short secrets are covered by output redaction. Repeated markers in one MCP
+  call reuse the consumed value instead of consuming a one-use key twice.
+- MCP input buffering is bounded and stdout decoding preserves fragmented UTF-8.
+
 ## [1.0.1] - 2026-08-02
 
 ### Changed

@@ -36,6 +36,7 @@
 
 const { spawn } = require('child_process');
 const vault = require('./core.js');
+const { streamRedactor } = require('./stream-redactor.js');
 
 const MARKER_RE = /\{\{\s*vault(-file)?\s*:\s*([A-Z][A-Z0-9_]{1,63})\s*\}\}/g;
 const VALUE_TTL_MS = 300000;   // a value with no matching response is dropped
@@ -90,18 +91,19 @@ function startChild(useShell) {
   child = spawn(cmd[0], cmd.slice(1), {
     stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: !!useShell
   });
+  const started = child;
   child.on('error', e => {
     if (!useShell && process.platform === 'win32' && e.code === 'ENOENT') return startChild(true);
     fail('cannot start ' + cmd[0] + ': ' + e.message);
   });
-  child.on('exit', (code, signal) => { cleanup(); process.exit(signal ? 1 : (code === null ? 1 : code)); });
-  child.stdout.on('data', d => fromChild(d.toString('utf8')));
-  child.stderr.on('data', d => {
-    // Server logs go to stderr, and a "curl -v"-style server can echo a header
-    // there. Redact before it reaches the terminal.
-    const pairs = currentPairs();
-    process.stderr.write(pairs.length ? vault.redactor(pairs)(d.toString('utf8')) : d);
+  child.on('close', (code, signal) => {
+    if (child !== started) return; // A failed .cmd attempt may already have a replacement.
+    stderrFilter.end(); cleanup(); process.exit(signal ? 1 : (code === null ? 1 : code));
   });
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', d => fromChild(d));
+  child.stderr.on('data', d => stderrFilter.write(d));
 }
 
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
@@ -113,13 +115,18 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 // id -> { pairs: [[name,value]...], at }. Held only until the matching response
 // is redacted, then dropped. Never written to disk.
 const inflight = new Map();
+// Late logs can arrive after a response. Retain patterns for this proxy's
+// lifetime, with a hard cap rather than silently forgetting sensitive values.
+const retained = new Map();
+const stderrFilter = streamRedactor(() => vault.redactor(currentPairs()).patterns,
+  text => process.stderr.write(text));
 
 function currentPairs() {
   const now = Date.now();
-  const pairs = [];
+  const pairs = Array.from(retained.values());
   for (const [id, rec] of inflight) {
     if (rec.at + VALUE_TTL_MS < now) { inflight.delete(id); continue; }
-    for (const p of rec.pairs) pairs.push(p);
+    for (const p of rec.pairs) if (!pairs.some(x => x[0] === p[0] && x[1] === p[1])) pairs.push(p);
   }
   return pairs;
 }
@@ -130,6 +137,7 @@ function lineReader(onLine) {
   let buf = '';
   return chunk => {
     buf += chunk;
+    if (buf.length > 4 * 1024 * 1024) fail('MCP message exceeds the 4 MB limit');
     let nl;
     while ((nl = buf.indexOf('\n')) !== -1) {
       const line = buf.slice(0, nl);
@@ -162,6 +170,8 @@ function substituteArguments(node, pairs, problems) {
         return full;
       }
       try {
+        const existing = pairs.find(p => p[0] === name);
+        if (existing) return existing[1];
         const v = vault.consume(name, 'mcp-proxy:' + serverName).value;
         pairs.push([name, v]);
         return v;
@@ -206,6 +216,10 @@ const fromClaude = lineReader(line => {
     return;
   }
 
+  for (const p of pairs) retained.set(p[0] + ':' + require('crypto').createHash('sha256').update(p[1]).digest('hex'), p);
+  if (retained.size > 100 || Array.from(retained.values()).reduce((n, p) => n + p[1].length, 0) > 1024 * 1024) {
+    fail('Redaction capacity reached; restart this MCP server');
+  }
   if (pairs.length && msg.id != null) inflight.set(msg.id, { pairs, at: Date.now() });
   const forwarded = Object.assign({}, msg, {
     params: Object.assign({}, msg.params, { arguments: newArgs })

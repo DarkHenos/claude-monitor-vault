@@ -1,0 +1,10 @@
+'use strict';
+const assert=require('assert/strict'),{paint}=require('../companion/colors');
+const data={},config={get:(k,f)=>data[k]??f};
+assert.deepEqual(paint(69,config),{level:'ok',color:'charts.blue'});
+assert.deepEqual(paint(70,config),{level:'warn',color:'charts.yellow'});
+assert.deepEqual(paint(90,config),{level:'crit',color:'charts.red'});
+data.codexColorStyle='custom';data.codexNormalColor='charts.purple';data.codexWarningColor='charts.orange';data.codexCriticalColor='foreground';
+assert.equal(paint(30,config).color,'charts.purple');assert.equal(paint(80,config).color,'charts.orange');assert.equal(paint(99,config).color,'foreground');
+data.codexCriticalColor='url(https://invalid.example)';assert.equal(paint(100,config).color,'charts.red');
+console.log('PASS Codex standard thresholds, custom colours and invalid-colour fallback');

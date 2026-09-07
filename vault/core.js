@@ -1491,7 +1491,7 @@ function consume(name, who) {
   s.lastUsedAt = Date.now();
   // Every consume() caller is an agent channel (shell hook, MCP proxy, MCP
   // env): the owner's own path is reveal(), which signs 'user'.
-  audit(v, 'use', s.name, who || null, 'claude');
+  audit(v, 'use', s.name, who || null, String(who || '').startsWith('codex:') ? 'codex' : 'claude');
   const burned = s.maxUses && s.uses >= s.maxUses;
   if (burned) {
     delete v.secrets[s.id];
@@ -2033,7 +2033,7 @@ function sweepTmp(maxAgeMs) {
 function redactor(pairs) {
   const subs = [];
   for (const [name, value] of pairs) {
-    if (!value || value.length < 6) continue;
+    if (!value) continue;
     subs.push([value, name]);
     subs.push([Buffer.from(value, 'utf8').toString('base64'), name]);
     try { subs.push([encodeURIComponent(value), name]); } catch (e) { /* ignore */ }
@@ -2052,13 +2052,15 @@ function redactor(pairs) {
     }
   }
   subs.sort((a, b) => b[0].length - a[0].length);
-  return function (text) {
+  const redact = function (text) {
     let out = String(text == null ? '' : text);
     for (const [needle, name] of subs) {
       if (needle && out.indexOf(needle) !== -1) out = out.split(needle).join('«vault:' + name + '»');
     }
     return out;
   };
+  redact.patterns = subs;
+  return redact;
 }
 
 // ------------------------------------------------------------------ diagnostic

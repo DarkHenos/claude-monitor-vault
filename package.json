@@ -1,8 +1,8 @@
 {
   "name": "claude-monitor-vault",
-  "displayName": "%ext.displayName%",
-  "description": "%ext.description%",
-  "version": "1.0.1-beta.1",
+  "displayName": "Claude Monitor & Vault + ChatGPT",
+  "description": "Monitor Claude Code and ChatGPT / Codex usage, switch session models, share project memory and manage encrypted local secrets in VS Code.",
+  "version": "1.1.0",
   "l10n": "./l10n",
   "publisher": "alexossart",
   "license": "MIT",
@@ -37,7 +37,12 @@
     "secrets",
     "vault",
     "api keys",
-    "mcp"
+    "mcp",
+    "chatgpt",
+    "codex",
+    "memory",
+    "agents.md",
+    "claude.md"
   ],
   "galleryBanner": {
     "color": "#D97757",
@@ -49,10 +54,10 @@
   ],
   "capabilities": {
     "untrustedWorkspaces": {
-      "supported": true,
+      "supported": "limited",
       "description": "%cap.untrusted%"
     },
-    "virtualWorkspaces": true
+    "virtualWorkspaces": false
   },
   "contributes": {
     "viewsContainers": {
@@ -293,6 +298,74 @@
         "category": "%cat.vault%",
         "title": "%cmd.vault.mcpSnippet%",
         "icon": "$(server)"
+      },
+      {
+        "command": "agentBridge.switch",
+        "category": "Claude Monitor",
+        "title": "%bridge.switch%",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "agentBridge.launch",
+        "category": "Claude Monitor",
+        "title": "%bridge.launch%"
+      },
+      {
+        "command": "agentBridge.memory",
+        "category": "Claude Monitor",
+        "title": "%bridge.memory%"
+      },
+      {
+        "command": "agentBridge.sync",
+        "category": "Claude Monitor",
+        "title": "%bridge.sync%"
+      },
+      {
+        "command": "agentBridge.refresh",
+        "category": "Claude Monitor",
+        "title": "%bridge.refresh%",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentBridge.enableCodex",
+        "category": "Claude Monitor",
+        "title": "%bridge.enableCodex%"
+      },
+      {
+        "command": "agentBridge.connectVault",
+        "category": "Claude Monitor",
+        "title": "%bridge.connectVault%"
+      },
+      {
+        "command": "agentBridge.disconnectVault",
+        "category": "Claude Monitor",
+        "title": "%bridge.disconnectVault%"
+      },
+      {
+        "command": "agentBridge.diagnostics",
+        "category": "Claude Monitor",
+        "title": "%bridge.diagnostics%"
+      },
+      {
+        "command": "agentBridge.restoreMemory",
+        "category": "Claude Monitor",
+        "title": "%bridge.restoreMemory%"
+      },
+      {
+        "command": "agentBridge.whatsNew",
+        "category": "Claude Monitor",
+        "title": "%bridge.whatsNew%",
+        "icon": "$(megaphone)"
+      },
+      {
+        "command": "agentBridge.actions",
+        "title": "%bridge.actions%",
+        "category": "Claude Monitor"
+      },
+      {
+        "command": "agentBridge.settings",
+        "title": "%bridge.settings%",
+        "category": "Claude Monitor"
       }
     ],
     "menus": {
@@ -514,6 +587,138 @@
           "type": "boolean",
           "default": true,
           "description": "%cfg.badge%"
+        },
+        "agentBridge.codexMonitor": {
+          "type": "boolean",
+          "default": false,
+          "description": "%bridge.cfg.monitor%",
+          "scope": "machine",
+          "deprecationMessage": "Use agentBridge.quotaDisplay."
+        },
+        "agentBridge.syncOnSwitch": {
+          "type": "boolean",
+          "default": true,
+          "description": "%bridge.cfg.sync%"
+        },
+        "agentBridge.claudeExecutable": {
+          "type": "string",
+          "default": "",
+          "description": "%bridge.cfg.executable%",
+          "scope": "machine"
+        },
+        "agentBridge.codexExecutable": {
+          "type": "string",
+          "default": "",
+          "description": "%bridge.cfg.executable%",
+          "scope": "machine"
+        },
+        "agentBridge.alertThresholds": {
+          "type": "array",
+          "default": [
+            80,
+            95
+          ],
+          "items": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "uniqueItems": true,
+          "maxItems": 5,
+          "description": "%bridge.cfg.alerts%"
+        },
+        "agentBridge.updateNotice": {
+          "type": "string",
+          "enum": [
+            "window",
+            "notification",
+            "off"
+          ],
+          "default": "window",
+          "description": "%bridge.cfg.updateNotice%",
+          "scope": "application"
+        },
+        "agentBridge.quotaDisplay": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "claude",
+            "codex",
+            "both"
+          ],
+          "default": "auto",
+          "description": "%bridge.cfg.quotaDisplay%"
+        },
+        "agentBridge.codexAutoSetup": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "%bridge.cfg.autoSetup%"
+        },
+        "agentBridge.codexVaultAccess": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "mcp"
+          ],
+          "enumDescriptions": [
+            "%bridge.access.claude%",
+            "%bridge.access.mcp%"
+          ],
+          "default": "claude",
+          "scope": "application",
+          "description": "%bridge.cfg.vaultAccess%"
+        },
+        "agentBridge.codexColorStyle": {
+          "type": "string",
+          "enum": [
+            "thresholds",
+            "custom"
+          ],
+          "default": "thresholds",
+          "description": "%bridge.cfg.colorStyle%"
+        },
+        "agentBridge.codexNormalColor": {
+          "type": "string",
+          "enum": [
+            "charts.blue",
+            "charts.green",
+            "charts.purple",
+            "charts.orange",
+            "charts.yellow",
+            "charts.red",
+            "foreground"
+          ],
+          "default": "charts.blue",
+          "description": "%bridge.cfg.normalColor%"
+        },
+        "agentBridge.codexWarningColor": {
+          "type": "string",
+          "enum": [
+            "charts.blue",
+            "charts.green",
+            "charts.purple",
+            "charts.orange",
+            "charts.yellow",
+            "charts.red",
+            "foreground"
+          ],
+          "default": "charts.yellow",
+          "description": "%bridge.cfg.warningColor%"
+        },
+        "agentBridge.codexCriticalColor": {
+          "type": "string",
+          "enum": [
+            "charts.blue",
+            "charts.green",
+            "charts.purple",
+            "charts.orange",
+            "charts.yellow",
+            "charts.red",
+            "foreground"
+          ],
+          "default": "charts.red",
+          "description": "%bridge.cfg.criticalColor%"
         }
       }
     },
@@ -525,6 +730,16 @@
     ]
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@vscode/vsce": "^3.9.2"
-  }
+  },
+  "scripts": {
+    "test": "node tests/companion-colors.js && node tests/automatic-companion.js && node tests/companion.js && node tests/memory-links.js && node tests/updates.js && node tests/codex-client.js && node tests/companion-ui.js && node tests/vault-access.js && node tests/vault-mcp.js && node tests/bridge-files.js && node tests/l10n-shape.js",
+    "package": "vsce package --pre-release",
+    "build:logo": "node scripts/render-logo.js",
+    "build:marketplace": "node scripts/build-marketplace.js",
+    "check:release": "node scripts/check-release.js",
+    "prepackage": "npm run check:release"
+  },
+  "markdown": "github"
 }

@@ -18,12 +18,25 @@ jobs:
         with: { node-version: '20' }
       - name: Every shipped file parses
         run: |
-          for f in extension.js i18n.js vault/*.js tests/*.js; do
+          for f in extension.js i18n.js companion/*.js vault/*.js tests/*.js; do
             node --check "$f" || exit 1
           done
           node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
       - name: The bridge ships every file it requires
         run: node tests/bridge-files.js
+      - name: Release metadata and documentation assets are consistent
+        run: node scripts/check-release.js
+      - name: Shared memory, quota transport and assistant workflows
+        run: |
+          node tests/companion-colors.js
+          node tests/companion.js
+          node tests/automatic-companion.js
+          node tests/vault-access.js
+          node tests/memory-links.js
+          node tests/updates.js
+          node tests/codex-client.js
+          node tests/companion-ui.js
+          node tests/vault-mcp.js
       - name: No credential ever enters the repository
         run: node tests/no-secrets.js
       - name: Translations keep their accents and their placeholders

@@ -83,6 +83,14 @@ for (const f of ['l10n/bundle.l10n.json', 'l10n/bundle.l10n.fr.json', 'l10n/bund
   check('no em dash in ' + f, txt.indexOf('—') === -1);
 }
 
+for (const locale of ['fr', 'de', 'es', 'pt']) {
+  for (const file of ['l10n/bundle.l10n.' + locale + '.json', 'package.nls.' + locale + '.json']) {
+    const data = JSON.parse(fs.readFileSync(path.join(ROOT, file), 'utf8'));
+    const damaged = Object.entries(data).filter(([key, value]) =>
+      typeof value === 'string' && (value.includes('\ufffd') || (value.includes('?') && !key.includes('?'))));
+    check('no corrupted characters in ' + file, damaged.length === 0, damaged.map(([key]) => key).join(', '));
+  }
+}
 console.log(results.join('\n'));
 const pass = results.filter(r => r.startsWith('PASS')).length;
 console.log('\n' + pass + ' OK, ' + (results.length - pass) + ' FAIL');

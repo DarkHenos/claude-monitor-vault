@@ -662,6 +662,9 @@ function activate(context) {
   // Language, before anything is built. 'auto' follows the editor, any other
   // value overrides it. Read once here, and again whenever the user changes it.
   i18n.load(context.globalState.get('uiLanguage', 'auto'), vscode.env.language);
+  const companion = require('./companion/ui.js').activate(context);
+  context.subscriptions.push(companion.onDidChange(() => { render(true); pushToWebview(); }));
+  require('./companion/updates.js').activate(context);
 
   // --- VAULT: isolated in a try/catch so that a vault failure never deprives
   // the user of their usage counters, the extension's original feature.
@@ -670,7 +673,18 @@ function activate(context) {
   let vault = null;
   let vaultError = null;
   try {
-    vault = require('./vault/ui.js').activateVault(context, VERSION, () => pushToWebview());
+    if (vscode.workspace.isTrusted) {
+      vault = require('./vault/ui.js').activateVault(context, VERSION, () => pushToWebview());
+    } else {
+      vaultError = i18n.t('Trust this workspace before connecting an assistant or using project memory.');
+      context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => {
+        try {
+          vault = require('./vault/ui.js').activateVault(context, VERSION, () => pushToWebview());
+          vaultError = null;
+        } catch (e) { vaultError = e.message; }
+        pushToWebview();
+      }));
+    }
   } catch (e) {
     vaultError = e && e.message ? e.message : String(e);
     console.error('Claude Vault unavailable:', e);
@@ -778,9 +792,12 @@ function activate(context) {
   function onWebviewMessage(m) {
     if (!m || !m.type) return;
     switch (m.type) {
+      case 'quotaDisplay': return companion.setDisplay(m.value);
+      case 'assistantActions': return vscode.commands.executeCommand('agentBridge.actions');
+      case 'connectCodex': return vscode.commands.executeCommand('agentBridge.connectVault');
       // render() explicitly: poll() only fetches, so without it the badge, the
       // status bar and the gauge stayed frozen until the next tick.
-      case 'refresh': return poll(true).then(() => { render(); schedule(); });
+      case 'refresh': return Promise.all([poll(true), companion.refresh()]).then(() => { render(); schedule(); });
       case 'create': return vault && vault.createFromPanel(m);
       case 'add': return vscode.commands.executeCommand('claudeVault.add');
       case 'del': return vscode.commands.executeCommand('claudeVault.delete', m.name);
@@ -828,6 +845,7 @@ function activate(context) {
     const c = cfg();
     const pause = (c.pauseWhenExhausted && last) ? pauseUntilOf(last.rows) : 0;
     return {
+      companion: companion.snapshot(),
       vault: vaultState,
       defaults: vault ? vault.getDefaults() : null,
       credits: (c.showCredits && last) ? (last.credits || null) : null,
@@ -968,6 +986,11 @@ function activate(context) {
         }
       }
     }
+    const combined = companionSummary();
+    if (combined) {
+      head = combined.text;
+      badge = cfg().badge && combined.pct > 0 ? { value: Math.round(combined.pct), tooltip: combined.text } : undefined;
+    }
     if (webviewView) {
       webviewView.description = head;
       // The badge stays a LEFT-side signal: on the right the panel is already
@@ -999,8 +1022,31 @@ function activate(context) {
     status.backgroundColor = lvl === 'crit' ? BG_CRIT : BG_WARN;
   }
 
+  function companionSummary() {
+    const c = companion.snapshot();
+    if (!c.providers.includes('codex')) return null;
+    const parts = [];
+    let pct = 0;
+    if (c.providers.includes('claude')) {
+      const r = last && last.rows[0];
+      parts.push('Claude ' + (r ? Math.round(r.pct) + '%' : '…'));
+      if (r) pct = r.pct;
+    }
+    const q = c.quotas[0];
+    parts.push('Codex ' + (q ? Math.round(q.pct) + '%' : '…') + (c.error ? ' ⚠' : ''));
+    if (q) pct = Math.max(pct, q.pct);
+    return { text: parts.join(' · '), pct };
+  }
+
   function renderStatus() {
     if (!cfg().statusBar) return;          // hidden: nothing to compute
+    const combined = companionSummary();
+    if (combined) {
+      status.text = '$(dashboard) ' + combined.text;
+      status.tooltip = combined.text + '\n' + i18n.t('Click to open the panel');
+      paintStatus(levelOf(combined.pct), combined.pct);
+      return;
+    }
     if (!last.rows.length) {
       status.text = '$(warning) Claude ?';
       status.tooltip = i18n.t('Claude Limits, {0}', last.error || i18n.t('no data'));
@@ -1034,7 +1080,10 @@ function activate(context) {
   }
 
   function render(force) {
-    if (!last) return;
+    if (!last) {
+      if (!companion.snapshot().providers.includes('codex')) return;
+      last = { rows: [], error: null, at: '' };
+    }
     const sig = signature();
     if (!force && sig === lastSig) return;
     lastSig = sig;
@@ -1057,6 +1106,7 @@ function activate(context) {
   // (cache.at + pollSeconds), identical for every window. Only the ACTIVE
   // window triggers the server call; the others just follow the cache.
   async function poll(force) {
+    if (!companion.snapshot().providers.includes('claude')) return;
     if (inFlight) return;
     const now = Date.now();
     const c = cfg();
@@ -1188,7 +1238,7 @@ function activate(context) {
   // --- commands
   context.subscriptions.push(
     vscode.commands.registerCommand('claudeLimits.refresh', async () => {
-      await poll(true);
+      await Promise.all([poll(true), companion.refresh()]);
       render();
       schedule();
     }),
@@ -1286,13 +1336,15 @@ function panelStrings() {
     nameRule: t('Uppercase letters, digits and underscores only, starting with a letter.'),
     exists: t('{0} already exists: creating it will replace the old value for good.', '{0}'),
     noKeys: t('No keys yet.'),
-    noKeysHint: t('Create one, then write $NAME in Claude: it will use the key without ever seeing its value.'),
+    noKeysHint: t('Create a key, then enable access for your assistant in its permissions.'),
     notConnected: t('Claude Code cannot read this vault yet.'),
+    connectCodex: t('Connect Codex to the vault'),
     connOutdated: t('The connection to Claude Code is from an older version.'),
     connect: t('Connect to Claude Code'),
     updateConn: t('Update the connection'),
     auditLog: t('Access log'),
     connection: t('Connection'),
+    assistantSettings: t('Assistant settings'),
     settings: t('Settings'),
     refreshNow: t('Refresh'),
     vaultTerminal: t('Open a vault terminal'),
@@ -1568,6 +1620,7 @@ function getHtml(T) {
 </head>
 <body>
 <div id="pane">
+  ${require('./companion/quota-panel').html().replace('NONCE_PLACEHOLDER', 'nonce="' + nonce + '"')}
   <div id="quota"></div>
   <!-- The header and the form are STATIC: the panel gets redrawn on every
        refresh, and a rebuilt form would wipe out whatever is being typed
@@ -1624,13 +1677,14 @@ function getHtml(T) {
 <div class="foot" id="foot">
   <button data-act="audit">${esc(T.auditLog)}</button>
   <span class="dot">·</span>
-  <button data-act="connect">${esc(T.connection)}</button>
+  <button data-act="settings">${esc(T.assistantSettings)}</button>
 </div>
 <div id="kmenu" hidden role="menu"></div>
 <script nonce="${nonce}">
 (function () {
   'use strict';
   var api = acquireVsCodeApi();
+  document.addEventListener('quota-action', function(e) { api.postMessage(e.detail); });
   // Translated once by the extension host and injected here: the webview has no
   // way to reach vscode.l10n itself.
   var T = ${JSON.stringify(T)};
@@ -1732,7 +1786,6 @@ function getHtml(T) {
       { act: 'terminal', label: T.vaultTerminal },
       { sep: true },
       { act: 'audit', label: T.auditLog },
-      { act: 'connect', label: T.connection },
       { act: 'settings', label: T.settings },
       { act: 'refresh', label: T.refreshNow }
     ], x, y, null);
@@ -1981,6 +2034,7 @@ function getHtml(T) {
     var k = d.rows.length ? 'q:' : 'q0:' + (d.error ? 1 : 0) + ':';
     for (var i = 0; i < d.rows.length; i++) k += d.rows[i].short + ',';
     var v = d.vault || { secrets: [] };
+    if(d.companion) k += '|assistant:' + d.companion.providers.join(',') + ':' + d.companion.setupReady;
     k += '|s:' + (v.connected ? 1 : 0) + (v.needsUpdate ? 1 : 0) +
          (v.recovery ? 1 : 0) + ':' + (v.issues || []).length + ':';
     for (var j = 0; j < v.secrets.length; j++) {
@@ -2009,11 +2063,16 @@ function getHtml(T) {
 
   function htmlSecrets(v) {
     var h = '';
+    var companion = lastData && lastData.companion;
+    if(companion && companion.providers.indexOf('codex')>=0) {
+      h += companion.setupReady ? '<div class="hint">ChatGPT / Codex · MCP</div>'
+        : '<div class="notice"><button data-act="connectCodex">'+esc(T.connectCodex)+'</button></div>';
+    }
     for (var i = 0; i < (v.issues || []).length; i++) {
       h += '<div class="notice' + (v.issues[i].level === 'error' ? ' err' : '') + '">' +
            esc(v.issues[i].msg) + '</div>';
     }
-    if (!v.connected) {
+    if (!v.connected && (!companion || companion.providers.indexOf('claude')>=0)) {
       h += '<div class="notice">' +
            esc(v.needsUpdate ? T.connOutdated : T.notConnected) +
            '<br><button data-act="connect">' +
@@ -2174,6 +2233,7 @@ function getHtml(T) {
 
   function render() {
     var d = lastData;
+    document.dispatchEvent(new CustomEvent('quota-initial', { detail: d }));
     var st = structOf(d);
     if (st !== struct) { struct = st; mountAll(d); }
     if (!refs) return;

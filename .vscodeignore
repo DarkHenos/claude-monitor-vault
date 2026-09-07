@@ -5,6 +5,12 @@
 .git/**
 .github/**
 tests/**
+RELEASE.md
+BRANDING.md
+scripts/**
+media/marketplace/*.svg
+media/logo-concept.png
+media/icon-legacy.png
 # Les captures sont servies par GitHub via des URL absolues : les embarquer
 # alourdirait le paquet sans rien y apporter.
 media/screenshots/**
