@@ -13,6 +13,11 @@ import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefBrowserBase
 import com.intellij.ui.jcef.JBCefJSQuery
 import com.intellij.util.ui.JBUI
+import org.cef.CefSettings
+import org.cef.browser.CefBrowser
+import org.cef.browser.CefFrame
+import org.cef.handler.CefDisplayHandlerAdapter
+import org.cef.handler.CefLoadHandlerAdapter
 import javax.swing.JComponent
 import javax.swing.SwingConstants
 
@@ -74,11 +79,28 @@ class WebviewModel(val id: String, private val host: NodeHost, val editorTab: Bo
 
 class Webviews(private val host: NodeHost) {
     private val models = HashMap<String, WebviewModel>()
+    // Pages whose tab the user closed. The extension may still address one
+    // before it hears of the closing; that message must not bring it back.
+    private val closed = HashSet<String>()
     var viewDescription: String? = null
         private set
 
+    init {
+        // The closing is reported when it happens: an editor can be disposed
+        // later, after the extension has already acted on a stale page.
+        host.project.messageBus.connect(host).subscribe(
+            com.intellij.openapi.fileEditor.FileEditorManagerListener.FILE_EDITOR_MANAGER,
+            object : com.intellij.openapi.fileEditor.FileEditorManagerListener {
+                override fun fileClosed(source: FileEditorManager, file: com.intellij.openapi.vfs.VirtualFile) {
+                    if (file is WebviewVirtualFile && source.openFiles.none { it === file }) onTabClosed(file.webviewId)
+                }
+            })
+    }
+
     fun model(id: String, editorTab: Boolean = id.startsWith("panel:")): WebviewModel =
         models.getOrPut(id) { WebviewModel(id, host, editorTab) }
+
+    private fun live(id: String): WebviewModel? = if (id in closed) null else model(id)
 
     fun find(id: String): WebviewModel? = models[id]
 
@@ -117,12 +139,12 @@ class Webviews(private val host: NodeHost) {
 
     fun onSetHtml(p: JsonObject) {
         val id = p.str("id") ?: return
-        model(id).setHtml(p.str("html") ?: "")
+        live(id)?.setHtml(p.str("html") ?: "")
     }
 
     fun onPost(p: JsonObject) {
         val id = p.str("id") ?: return
-        model(id).post(p.get("message") ?: JsonObject())
+        live(id)?.post(p.get("message") ?: JsonObject())
     }
 
     fun onViewUpdate(p: JsonObject) {
@@ -167,10 +189,11 @@ class Webviews(private val host: NodeHost) {
         models.remove(id)
     }
 
-    /** The user closed a page's tab. */
+    /** The user closed a page's tab. Called on close and again on dispose: once is enough. */
     fun onTabClosed(id: String) {
         if (closing.contains(id) || !models.containsKey(id)) return
         models.remove(id)
+        closed.add(id)
         host.notify("webview.disposed", jsonOf("id" to id))
     }
 
@@ -184,9 +207,15 @@ class Webviews(private val host: NodeHost) {
 // page's scripts use to talk to the extension. Both carry the page's own CSP
 // nonce, so its Content-Security-Policy stays exactly as strict as in VS Code.
 class WebviewBrowser(private val model: WebviewModel, parent: Disposable) : Disposable {
-    private val browser: JBCefBrowser? = if (JBCefApp.isSupported())
-        JBCefBrowser.createBuilder().setEnableOpenDevToolsMenuItem(false).build() else null
-    private val query: JBCefJSQuery? = browser?.let { JBCefJSQuery.create(it as JBCefBrowserBase) }
+    private var failure: Throwable? = null
+    private val browser: JBCefBrowser? = if (!JBCefApp.isSupported()) null else try {
+        JBCefBrowser.createBuilder().setEnableOpenDevToolsMenuItem(false).build()
+    } catch (e: Throwable) {
+        Plugin.LOG.warn("embedded browser unavailable", e)
+        failure = e
+        null
+    }
+    private var query: JBCefJSQuery? = null
     private val fallback = JBLabel(Texts.t("noJcef"), SwingConstants.CENTER)
     private var mixes: List<Pair<String, String>> = emptyList()
 
@@ -194,14 +223,40 @@ class WebviewBrowser(private val model: WebviewModel, parent: Disposable) : Disp
 
     init {
         Disposer.register(parent, this)
-        browser?.let { Disposer.register(this, it) }
-        query?.let { q ->
-            Disposer.register(this, q)
-            q.addHandler { request ->
-                onPageMessage(request)
+        browser?.let { b ->
+            Disposer.register(this, b)
+            // Out-of-process JCEF (Android Studio 2025.3 runs one) can refuse a
+            // JS query; the console channel below then carries the messages.
+            query = try { JBCefJSQuery.create(b as JBCefBrowserBase) } catch (e: Throwable) {
+                Plugin.LOG.warn("JS query unavailable, using the console channel", e)
                 null
             }
+            query?.let { q ->
+                Disposer.register(this, q)
+                q.addHandler { request ->
+                    onPageMessage(request)
+                    null
+                }
+            }
+            // The page also reports through the console. It is the channel when
+            // the JS query could not be created, and a second chance for "ready"
+            // if the load event is missed.
+            b.jbCefClient.addDisplayHandler(object : CefDisplayHandlerAdapter() {
+                override fun onConsoleMessage(browser: CefBrowser?, level: CefSettings.LogSeverity?,
+                                              message: String?, source: String?, line: Int): Boolean {
+                    if (message == null || !message.startsWith(CONSOLE_PREFIX)) return false
+                    onPageMessage(message.substring(CONSOLE_PREFIX.length))
+                    return true
+                }
+            }, b.cefBrowser)
+            b.jbCefClient.addLoadHandler(object : CefLoadHandlerAdapter() {
+                override fun onLoadEnd(browser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
+                    if (frame?.isMain == true) onPageMessage("{\"t\":\"ready\"}")
+                }
+            }, b.cefBrowser)
         }
+        failure?.let { fallback.text = "<html>" + com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(
+            Texts.t("noJcef") + " " + it) + "</html>" }
         fallback.border = JBUI.Borders.empty(12)
         model.attach(this)
     }
@@ -253,7 +308,7 @@ class WebviewBrowser(private val model: WebviewModel, parent: Disposable) : Disp
         val nonce = Regex("""'nonce-([^']+)'""").find(body)?.groupValues?.get(1)
         val n = if (nonce != null) " nonce=\"$nonce\"" else ""
         val q = query
-        val post = if (q != null) q.inject("s") else ""
+        val post = if (q != null) q.inject("s") else "console.log('$CONSOLE_PREFIX'+s)"
         // Inside a <script> element: the default Gson escapes <, > and &, so no
         // value (the restored state holds key names and notes) can close it.
         val safe = com.google.gson.Gson()
@@ -307,6 +362,8 @@ html,body{margin:0;background:var(--cmv-background);color:var(--vscode-foregroun
         model.detach(this)
     }
 }
+
+private const val CONSOLE_PREFIX = "__cmv__:"
 
 internal fun FileEditorManager.webviewFile(id: String) =
     openFiles.firstOrNull { it is WebviewVirtualFile && it.webviewId == id } as WebviewVirtualFile?

@@ -70,6 +70,7 @@ intellijPlatform {
             val local = providers.gradleProperty("platformLocalPath").orNull
             if (local != null) local(file(local)) else ide("IC", providers.gradleProperty("platformVersion").get())
             providers.gradleProperty("verifyAlso").orNull?.let { ide("IC", it) }
+            providers.gradleProperty("verifyLocal").orNull?.let { local(file(it)) }
         }
     }
     instrumentCode = false

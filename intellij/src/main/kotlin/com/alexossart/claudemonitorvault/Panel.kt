@@ -30,6 +30,21 @@ internal object Icons {
 // bar. The user can move it to any side; nothing in the extension depends on it.
 class PanelToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
+        try {
+            build(project, toolWindow)
+        } catch (e: Throwable) {
+            // An empty tool window says nothing; the reason, shown in place,
+            // is what a bug report needs.
+            Plugin.LOG.warn("the panel could not be built", e)
+            val label = JBLabel("<html>" + com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(
+                Plugin.NOTIFICATIONS + ": " + e) + "</html>")
+            label.border = JBUI.Borders.empty(12)
+            toolWindow.contentManager.removeAllContents(true)
+            toolWindow.contentManager.addContent(ContentFactory.getInstance().createContent(label, "", false))
+        }
+    }
+
+    private fun build(project: Project, toolWindow: ToolWindow) {
         val host = NodeHost.get(project)
         val view = WebviewBrowser(host.webviews.model(Plugin.VIEW_ID, false), toolWindow.disposable)
         val content = ContentFactory.getInstance().createContent(view.component, "", false)
