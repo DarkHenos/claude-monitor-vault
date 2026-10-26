@@ -1,0 +1,47 @@
+<idea-plugin>
+    <id>alexossart.claude-monitor-vault</id>
+    <name>Claude Monitor &amp; Vault + ChatGPT</name>
+    <vendor url="https://github.com/DarkHenos/claude-monitor-vault">DarkHenos</vendor>
+
+    <description><![CDATA[
+<p><b>Beta.</b> Monitor Claude Code and ChatGPT / Codex usage, switch session models, share project memory
+and manage encrypted local secrets, in JetBrains IDEs.</p>
+<p>This is the VS Code extension <i>Claude Monitor &amp; Vault + ChatGPT</i>, running unchanged on Node.js through
+a compatibility layer: same panel, same vault (<code>~/.claude/vault</code>, shared with VS Code), same
+Claude Code connection. Requires Node.js 18 or later.</p>
+]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.plugins.terminal</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Claude Monitor &amp; Vault" displayType="BALLOON"/>
+        <toolWindow id="Claude Monitor" anchor="right" secondary="false"
+                    icon="/icons/toolWindow.svg"
+                    factoryClass="com.alexossart.claudemonitorvault.PanelToolWindowFactory"/>
+        <statusBarWidgetFactory id="ClaudeMonitorVault.Status" order="first"
+                                implementation="com.alexossart.claudemonitorvault.StatusWidgetFactory"/>
+        <fileEditorProvider implementation="com.alexossart.claudemonitorvault.WebviewEditorProvider"/>
+        <postStartupActivity implementation="com.alexossart.claudemonitorvault.Startup"/>
+        <applicationConfigurable parentId="tools" id="ClaudeMonitorVault.Settings"
+                                 displayName="Claude Monitor &amp; Vault"
+                                 instance="com.alexossart.claudemonitorvault.SettingsConfigurable"/>
+        <completion.contributor language="any"
+                                implementationClass="com.alexossart.claudemonitorvault.MarkerCompletion"/>
+        <typedHandler implementation="com.alexossart.claudemonitorvault.MarkerTypedHandler"/>
+    </extensions>
+
+    <applicationListeners>
+        <listener class="com.alexossart.claudemonitorvault.SaveListener"
+                  topic="com.intellij.openapi.fileEditor.FileDocumentManagerListener"/>
+        <listener class="com.alexossart.claudemonitorvault.ThemeListener"
+                  topic="com.intellij.ide.ui.LafManagerListener"/>
+    </applicationListeners>
+
+    <actions>
+        <!-- Filled at startup with one action per command of package.json. -->
+        <group id="ClaudeMonitorVault.Menu" text="Claude Monitor &amp; Vault" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </group>
+    </actions>
+</idea-plugin>

@@ -8,8 +8,19 @@ from 1.0.0 onwards.
 
 ## [1.2.0] - 2026-10-22
 
+Still in development. The IntelliJ support below is a **beta**.
+
 ### Added
 
+- **IntelliJ IDEA and other JetBrains IDEs, beta (2023.1 and later).** A
+  JetBrains plugin (`intellij/`) runs the extension's own files on Node.js:
+  `host/` stands in for the `vscode` module and sends everything that needs a
+  screen to the IDE. Panel in a tool window, figures in the status bar,
+  messages, pickers and input boxes with the extension's own validation, pages
+  as editor tabs, terminals, diff previews, `{{vault:` completion, the commit
+  guard on save, and a settings page built from `package.json`. Same vault and
+  same Claude Code connection as VS Code. Requires Node.js 18 or later; checked
+  with JetBrains' Plugin Verifier against 2023.1 and 2025.2.
 
 - Groups and separators in the vault panel. Groups exist empty or filled, fold
   and unfold, and keep their order; separators carry an optional title. Drag and

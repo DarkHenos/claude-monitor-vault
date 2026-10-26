@@ -14,8 +14,9 @@ local files. Your familiar Claude Monitor & Vault now includes optional Codex su
  · [User guide](docs/GUIDE.md) · [Release notes](CHANGELOG.md)
  · [Report an issue](https://github.com/DarkHenos/claude-monitor-vault/issues)
 
-**Version 1.2.0** · VS Code 1.106+ · Windows, macOS and Linux · English, French,
-Spanish, German and Portuguese.
+**Version 1.2.0** · VS Code 1.106+ · IntelliJ IDEA and other JetBrains IDEs 2023.1+
+([beta](#intellij-idea-and-other-jetbrains-ides-beta)) · Windows, macOS and Linux ·
+English, French, Spanish, German and Portuguese.
 
 ## One panel for your assistants
 
@@ -184,6 +185,33 @@ command palette, or choose a notification instead in the settings.
 | `agentBridge.codexExecutable` | Optional absolute path to the Codex executable |
 | `claudeLimits.location` | Main or secondary sidebar |
 | `claudeLimits.alerts` | Claude quota notifications |
+
+## IntelliJ IDEA and other JetBrains IDEs (beta)
+
+Version 1.2.0 also runs in IntelliJ IDEA, WebStorm, PyCharm and the other
+JetBrains IDEs, from 2023.1 onwards. This support is a **beta**.
+
+It is the same extension, not a port: a small JetBrains plugin starts the
+extension's own files on Node.js and draws what they ask for with the IDE's
+components. The panel, the vault, the Claude Code connection and the ChatGPT /
+Codex features are the code VS Code runs. The vault is the same one
+(`~/.claude/vault`): a key created in one editor is there in the other.
+
+- **Requirements:** Node.js 18 or later, found on `PATH` or chosen in
+  *Settings > Tools > Claude Monitor & Vault*, and an IDE with JCEF (the default).
+- **Install:** *Settings > Plugins > ⚙ > Install Plugin from Disk*, then choose
+  `claude-monitor-vault-1.2.0.zip`. The plugin is not on JetBrains Marketplace yet.
+- **Where things are:** the panel is the *Claude Monitor* tool window on the
+  right, the usage figures are in the status bar, the commands are in
+  *Tools > Claude Monitor & Vault* and in *Find Action* (Ctrl+Shift+A), and the
+  settings are in *Settings > Tools > Claude Monitor & Vault*.
+- **Differences from VS Code:** no activity bar badge (the figures appear in the
+  tool window title and the status bar), and no side bar commands, since a tool
+  window is moved by dragging it. Memory previews open in the IDE's diff viewer.
+- **Both editors on one machine:** keep them on the same version. Each one keeps
+  the Claude Code connection in step with its own files.
+
+Building it is described in [intellij/README.md](intellij/README.md).
 
 ## Requirements and support
 

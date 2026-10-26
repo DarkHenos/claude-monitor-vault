@@ -33,3 +33,8 @@ id_ed25519
 .DS_Store
 Thumbs.db
 
+# JetBrains plugin build output (intellij/)
+intellij/build/
+intellij/.gradle/
+intellij/.intellijPlatform/
+intellij/.kotlin/

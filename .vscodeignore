@@ -17,3 +17,6 @@ media/screenshots/**
 node_modules/**
 package-lock.json
 **/*.tmp
+# The JetBrains plugin and its Node host are not part of the VS Code package.
+intellij/**
+host/**
