@@ -32,7 +32,7 @@ const MARKER = 'claude-vault-bridge';     // lets us find OUR entries
 // hook, every marker and every MCP call. tests/bridge-files.js keeps this
 // list honest by walking the requires.
 const FILES = ['core.js', 'wordlist.js', 'hook.js', 'get.js', 'list.js',
-               'add.js', 'env.js', 'mcp-proxy.js', 'stream-redactor.js'];
+               'add.js', 'set.js', 'env.js', 'mcp-proxy.js', 'stream-redactor.js'];
 const SHIMS = { win32: 'node-shim.cmd', posix: 'node-shim.sh' };
 const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse'];
 
@@ -61,6 +61,22 @@ function writeJson(file, obj) {
   fs.renameSync(tmp, file);
 }
 
+// One fingerprint for the whole set of bridge files, in FILES order, each name
+// bound to its content so two files swapping contents still change it. Null
+// when a file is missing: a partial bridge is never "up to date".
+function filesHash(dir) {
+  const h = require('crypto').createHash('sha256');
+  for (const f of FILES) {
+    // Decoded text, the same form syncBridge copies, so a byte the utf8 round
+    // trip normalises can never make a fresh copy look stale forever.
+    let txt;
+    try { txt = fs.readFileSync(path.join(dir, f), 'utf8'); } catch (e) { return null; }
+    h.update(f + '\0' + txt.length + '\0');
+    h.update(txt, 'utf8');
+  }
+  return h.digest('hex');
+}
+
 // Copies the code into the bridge. Idempotent: rewrites only if content differs.
 function syncBridge(srcDir, version) {
   if (!fs.existsSync(BRIDGE_DIR)) fs.mkdirSync(BRIDGE_DIR, { recursive: true, mode: 0o700 });
@@ -76,8 +92,11 @@ function syncBridge(srcDir, version) {
   }
   // The interpreter is recorded here so hook.js can rewrite commands with the
   // same one instead of re-deriving it from its own process.execPath.
+  // The hash is of what was just written, so status() can tell a bridge whose
+  // files drifted (an older copy, a file edited by hand) from a current one
+  // even when the version number did not move, as during development.
   writeJson(path.join(BRIDGE_DIR, 'version.json'),
-    { version, at: new Date().toISOString(), node: nodeExec() });
+    { version, at: new Date().toISOString(), node: nodeExec(), hash: filesHash(BRIDGE_DIR) });
   return changed;
 }
 
@@ -325,19 +344,27 @@ function unwrapMcpServers() {
   }
 }
 
-// Is the installation in place AND up to date?
-function status(version) {
+// Is the installation in place AND up to date? Up to date means the same
+// version AND the same files: the extension's own copy (srcDir, this folder by
+// default), what version.json recorded, and what actually sits in the bridge
+// must all agree. A version number alone said "up to date" for a bridge that
+// was missing a whole script.
+function status(version, srcDir) {
   const s = readJson(SETTINGS, {});
   const hooked = EVENTS.filter(ev =>
     Array.isArray(s.hooks && s.hooks[ev]) &&
     s.hooks[ev].some(m => (m.hooks || []).some(isOurs)));
   const v = readJson(path.join(BRIDGE_DIR, 'version.json'), null);
+  const want = filesHash(srcDir || __dirname);
+  const have = filesHash(BRIDGE_DIR);
+  const filesMatch = !!want && !!have && want === have && !!v && v.hash === want;
   return {
     installed: hooked.length === EVENTS.length,
     hookedEvents: hooked,
     missingEvents: EVENTS.filter(e => hooked.indexOf(e) === -1),
     bridgeVersion: v ? v.version : null,
-    upToDate: !!v && v.version === version
+    filesMatch,
+    upToDate: !!v && v.version === version && filesMatch
   };
 }
 

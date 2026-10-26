@@ -34,11 +34,11 @@ jobs:
           node tests/companion.js
           node tests/automatic-companion.js
           node tests/vault-access.js
+          node tests/vault-mcp.js
           node tests/memory-links.js
           node tests/updates.js
           node tests/codex-client.js
           node tests/companion-ui.js
-          node tests/vault-mcp.js
       - name: No credential ever enters the repository
         run: node tests/no-secrets.js
       - name: Translations keep their accents and their placeholders

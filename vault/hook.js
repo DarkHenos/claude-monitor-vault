@@ -22,6 +22,7 @@ const vault = require('./core.js');
 const GET_JS = path.join(__dirname, 'get.js');
 const LIST_JS = path.join(__dirname, 'list.js');
 const ADD_JS = path.join(__dirname, 'add.js');
+const SET_JS = path.join(__dirname, 'set.js');
 // The installer resolved a real interpreter and recorded it in the bridge.
 // Deriving it from our own process.execPath would propagate the Electron binary
 // into every rewritten command whenever this hook itself runs under Electron.
@@ -148,13 +149,73 @@ function onPrompt(input) {
 // without having to query anything. Deliberately minimal, just the names,
 // not the metadata: about 10 tokens for 40 keys. The detail arrives on
 // request, when the user writes $NAME.
+// Keys by group, in the layout's order, empty groups named too, so Claude sees
+// the list the way the user sorted it. A dated copy (KEY_2026_10 next to KEY)
+// is flagged, because "which of the two do I use" is the obvious question.
+function keysByGroup(all) {
+  let items = [];
+  try { items = vault.layout(); } catch (e) { /* flat list */ }
+  const names = all.map(s => s.name);
+  const label = s => {
+    let base = null;
+    try { base = vault.rotationOf(s.name, names); } catch (e) { /* plain name */ }
+    return base ? s.name + ' (newer copy of ' + base + ')' : s.name;
+  };
+  const groups = items.filter(i => i.type === 'group');
+  if (!groups.length) return all.map(label).join(', ');
+  const placed = new Set();
+  const parts = groups.map(g => {
+    const ks = all.filter(s => s.groupId === g.id);
+    ks.forEach(s => placed.add(s.name));
+    return '[' + g.name + ': ' + (ks.length ? ks.map(label).join(', ') : 'empty group') + ']';
+  });
+  const rest = all.filter(s => !placed.has(s.name));
+  if (rest.length) parts.push('[Ungrouped: ' + rest.map(label).join(', ') + ']');
+  return parts.join(' ');
+}
+
+function scopeText(s) {
+  return s.mcpServers && s.mcpServers.length ? 'servers: ' + s.mcpServers.join(', ') : 'all servers';
+}
+
+// What Claude may do about MCP and layout, from the user's setting. Read with
+// policyFast: this is information for Claude, the decision itself is taken
+// again, verified, in core.js whenever set.js or add.js acts.
+function aiRules() {
+  let pol = { mcpByAI: 'ask', layoutByAI: true };
+  try { pol = vault.policyFast('claude'); } catch (e) { /* defaults */ }
+  const mcp = pol.mcpByAI === 'off'
+    ? 'MCP access setting: off. You cannot change MCP access; if an MCP tool needs a key, ' +
+      'tell the user to turn on "Allow for MCP" for it in the Claude Vault view (they read your message).'
+    : pol.mcpByAI === 'auto'
+      ? 'MCP access setting: automatic. You may grant and remove MCP access yourself with ' +
+        setCommand() + ' NAME --mcp=SERVER --reason "why" (or --no-mcp), except for keys marked ' +
+        '"confirm every use", for every server at once, or for remote servers: those ask the user.'
+      : 'MCP access setting: ask. You may remove access (' + setCommand() + ' NAME --no-mcp) and ' +
+        'grant it when you create a key, for named local servers (add.js --mcp=SERVER). Anything ' +
+        'else becomes a request the user answers in VSCode: ' + setCommand() +
+        ' NAME --mcp=SERVER --reason "why" (one line).';
+  const lay = pol.layoutByAI
+    ? 'Keep related keys in one group: ' + setCommand() + ' NAME... --group "Name" (created if ' +
+      'missing) or --no-group; layout: --new-group "Name", --rename-group "Old" "New", ' +
+      '--delete-group "Name", --separator ["label"], --move "Group" N (or --move @P N for the ' +
+      'item at position P, e.g. a separator). ' + listCommand() +
+      ' --groups prints the current layout with each key\'s MCP scope and each separator\'s position.'
+    : 'The user does not let you reorganise keys; ' + listCommand() + ' --groups still prints the layout.';
+  return 'A shell command with a marker never needs MCP access: MCP access is only for MCP ' +
+    'tool calls. When one is needed, name the server (the <server> in mcp__<server>__tool) ' +
+    'rather than granting every server, and avoid blanket MCP access. ' + mcp + ' ' + lay;
+}
+
 function onSessionStart() {
   const all = vault.listFast().filter(s => !s.expired);
   const listing =
     'To list the key names at any time, run this in Bash: ' + listCommand() + '. ' +
     'To create a key, pipe the value straight into the vault so that it never ' +
-    'passes through you: ' + addCommand() + '. It appears in the Claude Vault view ' +
-    'immediately. An existing name is refused rather than replaced.';
+    'passes through you: ' + addCommand() + ' --note "what it is for" ' +
+    '[--mcp=SERVER | --no-mcp] [--group "Name"]. It appears in the Claude Vault view ' +
+    'immediately. An existing name is refused rather than replaced, and so is a value ' +
+    'the vault already holds under another name.';
 
   // Even an empty vault is worth announcing: without it, the listing command
   // would be unknown to Claude for the whole session, and a key created five
@@ -165,7 +226,8 @@ function onSessionStart() {
         hookEventName: 'SessionStart',
         additionalContext:
           'Claude Vault (local encrypted vault) is installed but empty. ' +
-          'Ask the user to create a key in the Claude Vault view in VSCode. ' + listing
+          'Ask the user to create a key in the Claude Vault view in VSCode. ' + listing + ' ' +
+          aiRules()
       }
     });
   }
@@ -174,22 +236,22 @@ function onSessionStart() {
   // are wrapped by the extension so that a key marked "Allow for MCP" is usable
   // in an MCP tool call through the vault's proxy, out of the transcript. Keys
   // not so marked are refused there, and the refusal is phrased for the user.
-  const mcpKeys = all.filter(s => s.mcp).map(s => s.name);
+  // Each key carries its scope: "all servers" is spelled out, so a blanket
+  // grant is visible as such rather than hidden behind a bare name.
+  const mcpKeys = all.filter(s => s.mcp);
   const mcpLine = mcpKeys.length
-    ? 'Allowed for MCP tool calls: ' + mcpKeys.join(', ') + '. Use these in an MCP ' +
-      'tool the same way, with the marker; a wrapped local server resolves it through ' +
-      'the vault proxy, out of your view, nothing to configure. A key that is NOT in ' +
-      'this list is refused in MCP calls; if you need one, tell the user to turn on ' +
-      '"Allow for MCP" for it in the Claude Vault view (they read your message).'
-    : 'No key is allowed for MCP tool calls yet. If you need one in an MCP tool, tell ' +
-      'the user to turn on "Allow for MCP" for it in the Claude Vault view.';
+    ? 'Allowed for MCP tool calls: ' + mcpKeys.map(s => s.name + ' (' + scopeText(s) + ')').join(', ') +
+      '. Use these in an MCP tool the same way, with the marker; a wrapped local server ' +
+      'resolves it through the vault proxy, out of your view, nothing to configure. A key ' +
+      'that is NOT in this list is refused in MCP calls.'
+    : 'No key is allowed for MCP tool calls yet.';
 
   out({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
       additionalContext:
         'Claude Vault (local encrypted vault), keys available: ' +
-        all.map(s => s.name).join(', ') + '. ' +
+        keysByGroup(all) + '. ' +
         'Their value is not accessible to you. To use one, write {{vault:NAME}} ' +
         '(or {{vault-file:NAME}} for a key expected as a file) in a ' +
         'Bash/PowerShell command: the substitution happens right before execution, out of your view. ' +
@@ -206,7 +268,7 @@ function onSessionStart() {
         'Vault view, or run the command through the launcher so the value travels in the ' +
         'environment instead of the command line. For a one-off command, the marker in ' +
         'the command line is fine and remains the normal way. ' +
-        mcpLine + ' ' + listing
+        mcpLine + ' ' + aiRules() + ' ' + listing
     }
   });
 }
@@ -244,18 +306,31 @@ function addCommand() {
   return "<command producing the value> | '" + toPosix(NODE) + "' '" + toPosix(ADD_JS) + "' KEY_NAME";
 }
 
-// Every way of naming list.js or add.js, quoted or bare. Matched loosely on
-// purpose: a token is only removed when the guard would otherwise have caught
-// it, so an add.js belonging to the user's own project is left alone and stays
-// harmless, while ".../claude-vault-bridge/add.js" is removed and forgiven.
-const ALLOWED_CALL_RE = /"[^"]*(?:list|add)\.js"|'[^']*(?:list|add)\.js'|[^\s"'`;|&<>]*(?:list|add)\.js/gi;
+function setCommand() {
+  return "'" + toPosix(NODE) + "' '" + toPosix(SET_JS) + "'";
+}
+
+// The three allowed scripts, by their EXACT path and nothing else: the native
+// form, the same with forward slashes, and the Git Bash form. Matching a loose
+// "...list.js" pattern meant any file of that name placed somewhere the guard
+// watches was forgiven too; an exact path names our own copy only.
+// Case-insensitive on Windows, where the file system is.
+function pathKey(p) { return process.platform === 'win32' ? String(p).toLowerCase() : String(p); }
+
+const ALLOWED_PATHS = new Set([LIST_JS, ADD_JS, SET_JS]
+  .reduce((acc, p) => acc.concat([p, p.replace(/\\/g, '/'), toPosix(p)]), [])
+  .map(pathKey));
+
+// Every shell word, quoted or bare. A word that is exactly one of the allowed
+// script paths is removed before the guard runs on what is left, so
+// "node list.js && cat masterkey.bin" still meets the guard on its second half.
+const WORD_RE = /"[^"]*"|'[^']*'|[^\s"'`;|&<>()]+/g;
 
 function withoutAllowedCalls(cmd) {
-  ALLOWED_CALL_RE.lastIndex = 0;
-  return cmd.replace(ALLOWED_CALL_RE, m => {
+  WORD_RE.lastIndex = 0;
+  return cmd.replace(WORD_RE, m => {
     const bare = m.replace(/^["']|["']$/g, '');
-    GUARD_RE.lastIndex = 0;
-    return GUARD_RE.test(bare) ? ' ' : m;
+    return ALLOWED_PATHS.has(pathKey(bare)) ? ' ' : m;
   });
 }
 
@@ -273,11 +348,37 @@ const MCP_DENY = {
   pt: '{0} nao esta autorizada para chamadas de ferramentas MCP. Para usa-la numa ferramenta MCP, ative « Permitir para MCP » na vista Claude Vault do VSCode.'
 };
 
+// Added when the user lets the AI ask (any MCP setting but off): the user reads
+// that a request is possible, in their language, and Claude gets the exact
+// command, in English, right after.
+const MCP_ASK = {
+  en: 'Claude can request this access; you approve or refuse it in VSCode.',
+  fr: "Claude peut demander cet acces ; tu l'acceptes ou le refuses dans VSCode.",
+  es: 'Claude puede solicitar este acceso; tu lo apruebas o lo rechazas en VSCode.',
+  de: 'Claude kann diesen Zugriff anfragen; du bestaetigst oder lehnst ihn in VSCode ab.',
+  pt: 'O Claude pode pedir este acesso; voce aprova ou recusa no VSCode.'
+};
+
+function userLang() {
+  try { return vault.uiLang(); } catch (e) { return 'en'; }
+}
+
 function mcpDenyMessage(names) {
-  let lang = 'en';
-  try { lang = vault.uiLang(); } catch (e) { /* default en */ }
-  const tpl = MCP_DENY[lang] || MCP_DENY.en;
+  const tpl = MCP_DENY[userLang()] || MCP_DENY.en;
   return tpl.replace('{0}', names);
+}
+
+function mcpMode() {
+  try { return vault.policyFast('claude').mcpByAI; } catch (e) { return 'ask'; }
+}
+
+// groups: [{ names, servers }]. --mcp sets a key's WHOLE list, so keys that
+// need different lists get different commands: one command per distinct list.
+function mcpAskHint(groups) {
+  if (mcpMode() === 'off' || !groups.length) return '';
+  const cmds = groups.map(g => setCommand() + ' ' + g.names.join(' ') + ' --mcp=' +
+    ((g.servers && g.servers.length) ? g.servers.join(',') : 'SERVER') + ' --reason "why the tool needs it"');
+  return (MCP_ASK[userLang()] || MCP_ASK.en) + ' Claude: to request it, run ' + cmds.join(' ; then ') + '.';
 }
 
 // Fundamental difference from the shell, worth keeping in mind:
@@ -325,6 +426,7 @@ function onPreToolMcp(input, tool, ti) {
   const known = vault.listFast().filter(s => !s.expired);
   const refused = [];      // technical problems (unknown, file form, errors)
   const notAllowed = [];   // exists but "Allow for MCP" is off, the user's case
+  const otherServer = [];  // allowed for MCP, but not for this server
   const used = [];
   const values = {};       // name -> value, sealed by notePending for redaction
 
@@ -343,6 +445,7 @@ function onPreToolMcp(input, tool, ti) {
     if (!vault.mcpAllows(s, server)) {
       refused.push(name + ': allowed for MCP, but not for the server "' + server +
         '" (its list: ' + (s.mcpServers || []).join(', ') + ')');
+      if (otherServer.indexOf(name) === -1) otherServer.push(name);
       return full;
     }
     try {
@@ -359,6 +462,29 @@ function onPreToolMcp(input, tool, ti) {
     const parts = [];
     if (notAllowed.length) parts.push(mcpDenyMessage(notAllowed.join(', ')));
     if (refused.length) parts.push('Claude Vault, ' + refused.join('; ') + '.');
+    // Access can be asked for rather than only lamented, unless the user set
+    // MCP changes by the AI to off. --mcp sets a key's whole list, so each key
+    // asks for exactly what it needs: a key without MCP for this server alone,
+    // a key scoped elsewhere for its own servers plus this one. Keys that end
+    // up with the same list share one command; nobody's list is widened to
+    // another key's servers, nor cut down to this one.
+    const targets = new Map();
+    const want = (name, servers) => {
+      const list = Array.from(new Set(servers.filter(Boolean))).sort();
+      const k = list.join(',');
+      if (!targets.has(k)) targets.set(k, { names: [], servers: list });
+      if (targets.get(k).names.indexOf(name) === -1) targets.get(k).names.push(name);
+    };
+    for (const n of notAllowed) want(n, [server]);
+    for (const n of otherServer) {
+      if (notAllowed.indexOf(n) !== -1) continue;
+      const s = known.find(x => x.name === n);
+      want(n, ((s && s.mcpServers) || []).concat([server]));
+    }
+    if (targets.size) {
+      const hint = mcpAskHint(Array.from(targets.values()));
+      if (hint) parts.push(hint);
+    }
     out({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
@@ -512,7 +638,8 @@ function onPreTool(input) {
           'happen out of your view. To see which keys exist, run ' + listCommand() +
           ', which prints names only. To create one, pipe the value in: ' + addCommand() +
           '. The value must reach it through the pipe, never as an argument and never ' +
-          'typed by you.'
+          'typed by you. To change MCP access or groups, run ' + setCommand() + '. ' +
+          'These scripts are allowed under their exact path only.'
       }
     });
   }

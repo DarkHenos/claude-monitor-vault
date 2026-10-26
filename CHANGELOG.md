@@ -6,6 +6,94 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from 1.0.0 onwards.
 
+## [1.2.0] - 2026-10-22
+
+### Added
+
+
+- Groups and separators in the vault panel. Groups exist empty or filled, fold
+  and unfold, and keep their order; separators carry an optional title. Drag and
+  drop for keys, groups and separators, Move up / Move down in the menus, a group
+  selector in the new-key form, and background, group, separator and key menus.
+  The layout is stored next to the vault, outside the encrypted data, and
+  travels with export and import.
+- Commands: New group, New separator, Move a key to a group, Organize keys into
+  a group, Rename a group, Delete a group (keys kept), Suggest groups and MCP
+  access for a group. Quick picks show the group of each key, in layout order.
+- Suggest groups: proposals from shared prefixes, with rotation suffixes removed,
+  environments kept and near spellings flagged. Nothing applies until you confirm.
+- Group MCP grant and removal: one confirmation listing every key concerned. A
+  grant only touches keys without MCP, so per-server scopes are kept; removal
+  has Undo.
+- The AI decides MCP access when it creates a key: `add.js` accepts `--mcp`,
+  `--mcp=SERVERS`, `--no-mcp` and `--group`. Without a decision the key is
+  created shell only. An empty server list is an error, and a value already
+  stored under another name is refused.
+- `set.js` for Claude: change MCP access or the group of existing keys, and
+  create, rename, delete, move groups and separators. `list.js --groups` prints
+  the layout with each key's MCP scope.
+- ChatGPT / Codex MCP tools with the same rules: `vault_create` (stores a
+  program's output, never returns it), `vault_set` and `vault_layout`.
+  `vault_list` now returns the layout order with each key's group and MCP scope.
+- Setting "What the AI may do" in the vault settings window: MCP access Off, Ask
+  (default) or Automatic, permission to organise keys, replacing keys without
+  asking, and an optional override per assistant. Turning Automatic on asks for
+  confirmation, and the panel shows a discreet line while it is on.
+- Approval window for MCP requests: who asks (Claude or ChatGPT), keys, servers
+  and the AI's reason, with Allow, Choose servers or Refuse. It applies exactly
+  what it showed; one request waits at a time and expires after 15 minutes.
+- Session start and MCP server instructions list keys by group, mark rotated
+  copies, spell out each key's MCP scope and give the current setting. A refused
+  MCP call says how to request access, unless the setting is Off.
+- Status bar notice when the AI changes groups or MCP access, and access log
+  labels for layout changes and MCP requests, approvals and refusals, with
+  Claude, ChatGPT or you as author.
+
+### Changed
+
+- ChatGPT / Codex quota rows use the same renderer as Claude's: labels from the
+  window length (Session (5h), Week, hours or days) with the plan name as a
+  tooltip, the live countdown, the optional projection, the same levels and
+  footer. The status bar and activity badge show both providers in Both mode.
+  Colour is the only difference.
+- The vault settings file is now signed. A file changed outside the extension
+  holds the AI to the strictest rules until you choose again; so does a signed
+  file that is later deleted, emptied or stripped of its signature.
+- Automatic replacement approval turned on before the update is no longer
+  believed from the unsigned file: VS Code asks once whether to keep it.
+- Replacing a key keeps its group; a replacement whose value already belongs to
+  another key drops MCP access. The replacement window says when the key is
+  allowed for MCP and offers Replace without MCP access.
+- Removing or narrowing MCP access no longer asks the AI for a reason; only a
+  grant or a widening does.
+- `list.js --groups` prints each separator's position, and `set.js --move @P N`
+  moves the item at position P, so every separator can be moved.
+- "none" is reserved and cannot name a group.
+
+### Fixed
+
+- Saving one setting no longer drops the others, such as the backup location.
+- The Claude bridge counts as up to date only when its files match the
+  extension's, not just its version number.
+- The panel refreshes when a group, the layout, MCP access or the setting
+  changes, including when the vault folder is created after VS Code started.
+- Writes from VS Code, the hooks, the bridge scripts and the MCP server no longer
+  overwrite one another: every change to the vault, the layout and the settings
+  holds a short lock, so a concurrent save can no longer lose a key or leave the
+  vault refused as out of date.
+- An MCP request that cannot be approved any more is answered as refused instead
+  of blocking new requests for 15 minutes, a request from an assistant switched
+  to Off no longer blocks the other one, and the waiting script reports a
+  request withdrawn before you answered instead of "pending".
+- Key details show ChatGPT as the author of keys it created; an MCP grant you
+  approved is no longer announced as a change made by the AI; a folded empty
+  group hides its notice; the settings card updates its MCP pill and warning
+  after a change.
+- ChatGPT projection: one history sample per poll period, so tab and terminal
+  switches no longer keep it from appearing; the "next update" time is only shown
+  while the window has focus and matches the real refresh; the status bar
+  tooltip names ChatGPT when its reading fails.
+
 ## [1.1.0] - 2026-09-07 (preview)
 
 ### Added

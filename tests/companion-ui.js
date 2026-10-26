@@ -63,6 +63,16 @@ const context = { subscriptions: [], extensionPath: path.resolve(__dirname, '..'
   assert.equal(quotaReads, 2);
   await service.setDisplay('invalid');
   assert.equal(service.snapshot().mode, 'codex');
+  // "next update" is when the re-armed timer really fires, and only while the
+  // window has focus: an unfocused window does not refresh, so it promises nothing.
+  const before = Date.now();
+  await service.refresh();
+  const snap = service.snapshot();
+  assert.ok(snap.updated >= before && snap.next >= snap.updated + 209000 && snap.next <= Date.now() + 210000, JSON.stringify(snap));
+  mock.window.state.focused = false;
+  assert.equal(service.snapshot().next, 0);
+  mock.window.state.focused = true;
+  console.log('PASS the next ChatGPT update is the real timer, and only shown while focused');
   await service.setDisplay('auto');
   assert.deepEqual(service.snapshot().providers, ['claude']);
   console.log('PASS selection activates quota reads automatically, supports both and rejects invalid modes');

@@ -8,7 +8,12 @@ One familiar panel contains a compact quota selector: **Automatic**, **Claude**,
 **ChatGPT / Codex**, or **Both assistants**. The **···** menu holds assistant
 switching, model selection and shared project memory.
 
-Version **1.1.0** introduces a refreshed logo: the familiar terracotta gauge
+Version **1.2.0** organises the vault into groups and separators, lets Claude
+and ChatGPT decide MCP access under a setting you control ([What the AI may
+do](#what-the-ai-may-do)), gives ChatGPT the `vault_create`, `vault_set` and
+`vault_layout` tools, and aligns ChatGPT quota rows with Claude's.
+
+Version **1.1.0** introduced a refreshed logo: the familiar terracotta gauge
 paired with a teal link representing connected assistants and shared knowledge.
 After installation or an update, a **What's New** tab explains the changes once
 per version and links to the new features. Reopen it with **Claude Monitor:
@@ -24,6 +29,7 @@ notification provides the summary instead.
 | Model choice | Default, Sonnet, Opus, Haiku or a model ID | Available model catalog, default or a model ID |
 | Project memory | `CLAUDE.md` reads shared notes | `AGENTS.md` reads the same shared notes |
 | Encrypted vault | Existing hooks, terminal and MCP proxy | Local MCP tools `vault_list` and `vault_run` |
+| Vault changes by the AI | `add.js`, `set.js` and `list.js --groups` | `vault_create`, `vault_set` and `vault_layout` |
 
 ### Switch assistants without losing project knowledge
 
@@ -81,6 +87,15 @@ Monitoring uses the Codex App Server account
 interface. It displays returned percentages, window durations, reset times and
 the last update. Failed refreshes keep the last values with a warning.
 
+ChatGPT rows are drawn by the same code as Claude rows, so both blocks look and
+behave the same; only the colour differs. The label comes from the window length
+(**Session (5h)** for five hours, **Week** for seven days, otherwise hours or
+days), with the plan name as a tooltip. The reset line is a live countdown such
+as **resets in 2 h 14**, refreshed every minute and every 10 seconds near a reset.
+When projection is on, the same "hits the limit around 16:40" estimate appears.
+Levels switch at 70% and 90%, the footer gives the last and next update, and in
+**Both assistants** mode the status bar and activity badge show both providers.
+
 The counters describe the quota buckets returned for the connected Codex account;
 they are not a promise to cover every limit on the ChatGPT website. API-key-only
 accounts do not provide subscription quotas. CLI discovery supports native
@@ -104,6 +119,18 @@ redacts output before returning it. It does not return secret values as a tool.
 Programs run in the connected project, without shell expansion, with a 60-second
 timeout and a 1 MB output limit. This is a separate tool path; it does not rewrite
 arbitrary Codex shell calls. Existing Claude hooks continue to work as before.
+
+Three more tools give ChatGPT the same powers as Claude's bridge scripts, under
+the same rules, and every action is recorded as ChatGPT in the access log:
+
+| Tool | What it does |
+|---|---|
+| `vault_list` | Keys in your layout order, each with its group and MCP scope, plus the current setting. Never values. |
+| `vault_create` | Runs a program (no shell, 60 seconds, 64 KB) and stores its standard output as a new key. The value is never returned. Takes a name, a note, an MCP decision (`"none"`, `"all"` or a list of servers) and an optional group. |
+| `vault_set` | Changes MCP access or the group of existing keys. A grant or a widening needs a one-line reason; removing or narrowing does not. When your approval is needed, the tool waits up to 50 seconds and reports approved, refused, withdrawn or pending. |
+| `vault_layout` | Creates, renames, deletes or moves groups and separators. Positions count from 1 at the top. |
+
+The decisions are the same as for Claude: see [What the AI may do](#what-the-ai-may-do).
 
 Codex vault access requires VS Code to remain open when a key needs per-use
 confirmation. Use **Disconnect Codex from the vault** to remove the managed entry.
@@ -150,7 +177,7 @@ code --install-extension alexossart.claude-monitor-vault
 To install a `.vsix` yourself:
 
 ```
-code --install-extension claude-monitor-vault-1.1.0.vsix
+code --install-extension claude-monitor-vault-1.2.0.vsix
 ```
 
 Requires **VS Code 1.106** or newer. Plain JavaScript, no runtime dependencies.
@@ -181,7 +208,7 @@ Requires **VS Code 1.106** or newer. Plain JavaScript, no runtime dependencies.
 
 | | |
 |---|---|
-| Panel | one row per limit (session, week, per model), bar, percentage, countdown |
+| Panel | one row per limit (session, week, per model), bar, percentage, countdown; ChatGPT rows use the same layout |
 | Activity-bar badge | session percentage on the icon, wherever the panel sits |
 | Status bar | compact figure such as `session: 8%`, full breakdown on hover; two styles: **Prominent** (default coloured pill, amber then red) or **Custom** (text only, colour band configurable per session %) |
 | Band editor | in Custom mode only, drag boundaries or type percentages; built-in preview scales the text colour as you edit |
@@ -301,25 +328,139 @@ Ctrl+Shift+P  >  Claude Vault: Check what is staged for commit
 
 ### What Claude can do on its own
 
-Two actions, both safe by construction.
+Three scripts, all safe by construction: none of them reads, prints or receives
+a value on its command line.
 
-**List the key names.** Metadata only, no path to a value.
+**List the key names.** Metadata only, no path to a value. With `--groups`, the
+layout in order: `# Group` lines, `---` separator lines (with their label if
+any), one `NAME<TAB>scope` line per key (`mcp:all`, `mcp:server1,server2` or `-`
+for shell only), and `# Ungrouped` last.
 
 ```
 node ~/.claude/claude-vault-bridge/list.js
+node ~/.claude/claude-vault-bridge/list.js --groups
 ```
 
 **Create a key.** The value arrives through a pipe, so it never passes through
 the model or the transcript. The name comes from the command line, the value
-only from stdin, and a description is required.
+only from stdin, and a description is required. Claude also says what the key
+may do, since it knows what the key is for:
+
+| Flag | Meaning |
+|---|---|
+| `--mcp=server1,server2` | usable in MCP tool calls of those servers only (refused when MCP access is Off, see [What the AI may do](#what-the-ai-may-do)) |
+| `--mcp` | usable by every MCP server (asks you first; refused when MCP access is Off) |
+| `--no-mcp` | shell only |
+| `--group "Name"` | placed in that group, created if missing when you allow the AI to organise keys |
 
 ```
-openssl rand -hex 32 | node ~/.claude/claude-vault-bridge/add.js SESSION_SECRET --note "signs the API session cookies"
+openssl rand -hex 32 | node ~/.claude/claude-vault-bridge/add.js SESSION_SECRET --note "signs the API session cookies" --no-mcp --group "Backend"
 ```
+
+Leaving the MCP decision out is not an error: the key is created shell only and
+the output gives the `set.js` command to request access later. An empty server
+list is an error, never "every server". A value already stored under another
+name is refused, so the vault does not fill with copies.
 
 An existing key is never replaced without approval: `--replace` seals the new
-value and parks it until you approve in VS Code. **Deletion is always yours**,
+value and parks it until you approve in VS Code. When the key is allowed for MCP,
+the window says so, since the new value inherits that access, and offers
+**Replace without MCP access**. On `--replace`, the MCP and group
+flags are ignored with a note pointing to `set.js`. **Deletion is always yours**,
 Claude has no path to it.
+
+**Change existing keys and the layout.** `set.js` changes MCP access or the group
+of existing keys, and reorganises groups and separators:
+
+```
+node ~/.claude/claude-vault-bridge/set.js NAME [NAME...] --mcp=server,...|--mcp|--no-mcp [--reason "why"]
+node ~/.claude/claude-vault-bridge/set.js NAME [NAME...] --group "Name"|--no-group
+node ~/.claude/claude-vault-bridge/set.js --new-group "Name" [--at N] | --rename-group "Old" "New" | --delete-group "Name"
+node ~/.claude/claude-vault-bridge/set.js --separator ["label"] [--at N] | --move "Group or separator"|@P N
+```
+
+Positions count groups and separators from 1 at the top, in the order
+`list.js --groups` prints them; it prints each separator's position too, and
+`@P` names the item at position P (`--move @3 1`), which is how a separator with
+no label, or with a label used twice, is moved. A grant or a widening needs a
+one-line reason (200 characters at most); removing or narrowing access does not.
+When your approval is needed, the script waits 60 seconds and reports approved,
+refused, withdrawn (the key changed or the request expired before you answered)
+or pending. ChatGPT has the same operations through its MCP
+tools, see [Use the vault from Codex](#use-the-vault-from-codex).
+
+### Groups and separators
+
+Groups work like folders in a sidebar. They exist empty or filled, keep the
+order you give them, and fold or unfold with a click; the folded state survives
+refreshes and restarts. Separators are thin lines between groups, with an
+optional small title. Keys without a group are listed last under **Ungrouped**;
+with no layout at all, the list stays flat as before.
+
+- **Reorder** by dragging keys, groups and separators, or with **Move up** and
+  **Move down** in their menus. Dropping a key on a group moves it there.
+- **Menus.** Right-click the background for New group, New separator, Suggest
+  groups, Collapse all and Expand all. A group menu offers New key in this group,
+  Rename, Move up, Move down, Allow MCP for the group, Remove MCP for the group
+  and Delete group (its keys are kept, ungrouped). A key menu has **Move to group**.
+- **Group header.** Name, key count, how many are allowed for MCP, and a dot
+  when a folded key is old or running out.
+- **Search** matches names, groups and descriptions and shows visible / total.
+  A folded group opens while a search matches inside it.
+- **Suggest groups** looks at ungrouped keys sharing a prefix, removes rotation
+  suffixes such as `_2026_10`, keeps environments (`BO_DEV_*` gives "BO DEV",
+  `BO_PROD_*` gives "BO PROD") and flags near spellings such as CLOUDLFARE.
+  Nothing is applied until you confirm.
+- **Group MCP.** Allowing MCP for a group lists every key concerned in one
+  confirmation and only touches keys without MCP, so per-server scopes are kept.
+  Removal has Undo.
+
+Group names use letters, digits, spaces and `. _ & + -`, 40 characters at most,
+unique regardless of case. Groups only change where a key sits, never what it
+can do. The layout is stored next to the vault, outside the encrypted data, and
+is carried by export and import. Replacing, renaming, binning and restoring a key
+keep its group.
+
+### What the AI may do
+
+A card in the vault settings window sets what Claude and ChatGPT may change on
+their own. The AI never reads a value; these rules only decide what it may change
+and what it must ask you first. One setting covers both assistants, with an
+optional override per assistant.
+
+| MCP access | Behaviour |
+|---|---|
+| **Off** | The AI never changes MCP access. |
+| **Ask** (default) | The AI may remove access, and grant it when it creates a key for named local servers. Anything else asks you. |
+| **Automatic** | The AI grants and removes on its own, except for keys that ask before every use, grants to every server and grants to remote servers, which still ask. Turning it on asks for confirmation, and the panel shows a line while it is on. |
+
+- **Removing or narrowing** MCP access always applies at once.
+- **Organising keys** (groups, separators, placement) is on by default and applies
+  at once. Turn it off and the AI may not reorganise your keys.
+- **Replace keys without asking** is the existing automatic approval, off by
+  default and now visible here. If it was on before the update, VS Code asks once
+  whether to keep it; until you answer, replacements ask you.
+- These settings are signed. A settings file edited, emptied or deleted outside
+  the extension holds both assistants to the strictest rules (MCP access Off, no
+  reorganising) until you choose again in this card.
+
+When a grant needs you, one VS Code window says who asks (Claude or ChatGPT),
+which keys, which servers (remote or unwrapped ones are marked) and the AI's
+one-line reason, with **Allow**, **Choose servers** or **Refuse**. It applies
+exactly what it showed; closing it counts as Refuse, and a request that changed
+in the meantime is refused rather than applied. Only one request waits at a
+time, and it expires after 15 minutes. A change made by the AI shows briefly in
+the status bar, for example "Claude moved 3 key(s) to Scaleway".
+
+At session start Claude is told the keys by group, rotated copies ("newer copy
+of X"), each key's MCP scope, short rules and the current setting; ChatGPT gets
+the same through the MCP server instructions and `vault_list`. When an MCP call
+is refused, the message also says how to request access, unless the setting is
+Off.
+
+The settings file is signed. If it is changed outside the extension, the AI is
+held to the strictest rules until you choose again in this card. Export and
+import carry these settings.
 
 ### How it is encrypted
 
@@ -382,7 +523,9 @@ command transformed on its own.
 ### Access log
 
 Every use, creation, replacement, expiry and revocation is recorded with the key
-name, the time and **who acted**, Claude or you. Never the value. Bounded at 500
+name, the time and **who acted**: Claude, ChatGPT or you. Layout changes, key
+placements and MCP requests, approvals and refusals are recorded the same way.
+Never the value. Bounded at 500
 entries and 90 days: long enough to investigate, short enough that the file
 forgets on its own.
 
@@ -414,6 +557,12 @@ limits**.
 | Rename a key / Replace the value | without ever showing the old value |
 | Public or secret | stop watching a publishable value, or resume |
 | Ask before every use | require a confirmation for one key |
+| New group / New separator | add a group or a separator line to the layout |
+| Move a key to a group | place one key, or take it out of its group |
+| Organize keys into a group | move several keys at once |
+| Rename a group / Delete a group (keys kept) | deleting a group never deletes its keys |
+| Suggest groups | proposals from shared prefixes, applied only after you confirm |
+| MCP access for a group | allow or remove MCP for every key of a group |
 | Connect / Disconnect | wire Claude Code, or restore it exactly |
 | Access log | who used what, and when |
 | Revoke everything | new master key, every secret unreadable, immediately |

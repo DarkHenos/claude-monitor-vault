@@ -11,6 +11,13 @@ const setup = require('./setup');
 const colors = require('./colors');
 const { t } = require('../i18n');
 
+// ChatGPT quota refresh period while the window has focus. The timer is
+// re-armed at the end of every refresh, whatever triggered it (a tab or a
+// terminal change refreshes too), so the footer's "next update" is the moment
+// the timer will really fire. An unfocused window does not refresh at all, and
+// its footer then shows no "next" time rather than one that will pass unmet.
+const REFRESH_MS = 210000;
+
 function activate(context) {
   const emitter = new vscode.EventEmitter();
   let client = null, quotas = [], error = '', updated = 0, busy = false, disposed = false;
@@ -33,7 +40,8 @@ function activate(context) {
     return detection.detect(vscode, firstRoot(), saved(firstRoot()), undefined, running);
   }
   function snapshot() {
-    return { mode: config().get('quotaDisplay', 'auto'), providers: providers(), quotas: quotas.map(q=>({...q,...colors.paint(q.pct,config())})), error, updated, busy, setupError, setupReady };
+    // `next` feeds the same "updated / next" footer the Claude block shows.
+    return { mode: config().get('quotaDisplay', 'auto'), providers: providers(), quotas: quotas.map(q=>({...q,...colors.paint(q.pct,config())})), error, updated, next: updated && focused() && nextAt ? nextAt : 0, busy, setupError, setupReady };
   }
   let setupError = '', preparing = false, setupReady = false;
   async function prepare(root = firstRoot(), force = false) {
@@ -80,7 +88,8 @@ function activate(context) {
     return client;
   }
   async function refresh() {
-    if (busy || disposed || !vscode.workspace.isTrusted || !providers().includes('codex')) return;
+    if (busy) return;                     // the refresh in flight re-arms the timer
+    if (disposed || !vscode.workspace.isTrusted || !providers().includes('codex')) { arm(); return; }
     busy = true; emitter.fire();
     let current;
     try {
@@ -99,7 +108,7 @@ function activate(context) {
       }
       if (alerts.size > 200) alerts.clear();
     } catch (e) { if (!disposed && (!current || client === current)) error = e.message; }
-    finally { busy = false; emitter.fire(); }
+    finally { busy = false; arm(); emitter.fire(); }
   }
   const documents = new Map();
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('agent-bridge-preview', {
@@ -262,6 +271,15 @@ function activate(context) {
     try { return await fn(); } catch (e) { vscode.window.showErrorMessage(e.message); }
   }));
   function changed() { emitter.fire(); if(providers().includes('codex')) prepare(); refresh(); }
+  function focused() { return !!(vscode.window.state && vscode.window.state.focused); }
+  let timer = null, nextAt = 0;
+  function tick() { timer = null; if (focused()) changed(); else arm(); }
+  function arm() {
+    if (disposed) return;
+    if (timer) clearTimeout(timer);
+    nextAt = Date.now() + REFRESH_MS;
+    timer = setTimeout(tick, REFRESH_MS);
+  }
   if (vscode.window.onDidStartTerminalShellExecution) context.subscriptions.push(vscode.window.onDidStartTerminalShellExecution(e => {
     const p=detection.commandProvider(e.execution.commandLine.value); if(p) {running.set(e.terminal,p);changed();}
   }));
@@ -269,8 +287,17 @@ function activate(context) {
   for (const [owner, name] of [[vscode.window,'onDidChangeActiveTerminal'], [vscode.window,'onDidOpenTerminal'], [vscode.window,'onDidCloseTerminal'], [vscode.window.tabGroups,'onDidChangeTabs'], [vscode.window.tabGroups,'onDidChangeTabGroups'], [vscode.extensions,'onDidChange']]) {
     if(owner && typeof owner[name] === 'function') context.subscriptions.push(owner[name](changed));
   }
-  const timer = setInterval(() => { if (vscode.window.state.focused) changed(); }, 210000);
-  context.subscriptions.push(emitter, { dispose() { disposed = true; clearInterval(timer); if (client) client.dispose(); documents.clear(); running.clear(); } },
+  // Focus changes what the footer can promise, so it is redrawn; a window that
+  // comes back after a full period away reads the quota again at once.
+  if (typeof vscode.window.onDidChangeWindowState === 'function') {
+    context.subscriptions.push(vscode.window.onDidChangeWindowState(st => {
+      if (disposed) return;
+      if (st && st.focused && updated && Date.now() - updated >= REFRESH_MS) changed();
+      else emitter.fire();
+    }));
+  }
+  arm();
+  context.subscriptions.push(emitter, { dispose() { disposed = true; clearTimeout(timer); timer = null; if (client) client.dispose(); documents.clear(); running.clear(); } },
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('agentBridge')) {
         if (client) client.dispose(); client = null; quotas = []; error = ''; updated = 0; alerts.clear(); changed();

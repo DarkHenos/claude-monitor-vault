@@ -410,6 +410,24 @@ function etaText(at) {
   return i18n.t('resets in {0}h {1}', String(h), String(m).padStart(2, '0'));
 }
 
+// ChatGPT / Codex announces each limit by its window length in minutes, not by
+// name. Read in the vocabulary the Claude rows already use, so the two blocks
+// say "Session (5h)" and "Week" alike; any other window falls back to its plain
+// length, which is still more telling than the plan's internal name.
+function windowLabel(minutes) {
+  const m = Number(minutes);
+  if (!isFinite(m) || m <= 0) return '';
+  if (m === 300) return i18n.t('Session (5h)');
+  if (m === 10080) return i18n.t('Week');
+  if (m < 60) return i18n.t('{0} min', String(Math.round(m)));
+  if (m % 1440 === 0) return i18n.t('{0} d', String(m / 1440));
+  return i18n.t('{0} h', String(Math.round(m / 6) / 10));
+}
+
+// Which Claude limit a window behaves like: up to a day it is a session (its
+// projection follows the session option), beyond that a week.
+function windowKind(minutes) { return Number(minutes) > 1440 ? 'sem' : '5h'; }
+
 function worstLevel(rows) {
   for (const r of rows) if (r.level === 'crit') return 'crit';
   for (const r of rows) if (r.level === 'warn') return 'warn';
@@ -817,6 +835,19 @@ function activate(context) {
       case 'public': return vscode.commands.executeCommand('claudeVault.togglePublic', m.name);
       case 'terminal': return vscode.commands.executeCommand('claudeVault.terminal');
       case 'confirm': return vscode.commands.executeCommand('claudeVault.toggleConfirm', m.name);
+      // Groups and separators. Ids and names are checked again on the vault
+      // side: a stale or scripted message can at worst do nothing.
+      case 'groupToggle': return vault && vault.groupToggle(m.id);
+      case 'groupMenuAct': return vault && vault.groupMenuAct(m.act, m.id);
+      case 'sepMenuAct': return vault && vault.sepMenuAct(m.act, m.id);
+      case 'moveKey': return vault && vault.moveKey(m.name, m.groupId);
+      case 'moveKeyNew': return vault && vault.moveKeyToNewGroup(m.name);
+      case 'moveItem': return vault && vault.moveItemTo(m.id, m.toIndex);
+      case 'collapseAll': return vault && vault.collapseAll(true);
+      case 'expandAll': return vault && vault.collapseAll(false);
+      case 'newGroup': return vscode.commands.executeCommand('claudeVault.newGroup');
+      case 'newSeparator': return vscode.commands.executeCommand('claudeVault.newSeparator');
+      case 'suggestGroups': return vscode.commands.executeCommand('claudeVault.suggestGroups');
     }
   }
 
@@ -841,11 +872,11 @@ function activate(context) {
     const vaultState = vault
       ? vault.snapshot()
       : { secrets: [], issues: [{ level: 'error', msg: vaultError || i18n.t('vault unavailable') }],
-          connected: false, needsUpdate: false };
+          connected: false, needsUpdate: false, layout: [], pending: [], policy: null };
     const c = cfg();
     const pause = (c.pauseWhenExhausted && last) ? pauseUntilOf(last.rows) : 0;
     return {
-      companion: companion.snapshot(),
+      companion: codexPayload(companion.snapshot(), c),
       vault: vaultState,
       defaults: vault ? vault.getDefaults() : null,
       credits: (c.showCredits && last) ? (last.credits || null) : null,
@@ -888,8 +919,11 @@ function activate(context) {
   }
 
   function projectFull(r, c) {
-    if (r.short === '5h' && !c.projectionSession) return 0;
-    if (r.short === 'sem' && !c.projectionWeek) return 0;
+    // ChatGPT rows carry their own history key in `short` and say which limit
+    // type they behave like in `kind`, so one option governs both providers.
+    const kind = r.kind || r.short;
+    if (kind === '5h' && !c.projectionSession) return 0;
+    if (kind === 'sem' && !c.projectionWeek) return 0;
     const h = HIST[r.short];
     if (!h || h.length < 3 || r.pct >= 100) return 0;
     const span = h[h.length - 1].t - h[0].t;
@@ -911,6 +945,71 @@ function activate(context) {
     // If the window resets first, there is nothing to warn about.
     if (isFinite(r.resetAt) && r.resetAt && at >= r.resetAt) return 0;
     return Math.round(at);
+  }
+
+  // ---- ChatGPT / Codex rows, shaped like the Claude ones
+  //
+  // The two quota blocks must read the same way: labels from the window length,
+  // the same countdown, the same projection, the same 70/90 levels. Building the
+  // ChatGPT rows here, next to the Claude ones and with the same fields, is what
+  // lets the panel, the status bar and the badge use a single code path for
+  // both. Only the colour stays ChatGPT's own (colors.paint, custom setting).
+  const CODEX_KEY = 'cx:';                         // history keys never collide with Claude's
+  let codexSeen = 0;
+
+  function codexRows(snap, c) {
+    const qs = (snap && snap.quotas) || [];
+    const labels = qs.map(q => windowLabel(q.minutes) || q.label || 'ChatGPT');
+    return qs.map((q, i) => {
+      const kind = windowKind(q.minutes);
+      // Two plans with the same window would read as twin rows: only then does
+      // the plan name join the label. Otherwise it stays in the tooltip.
+      const twin = labels.indexOf(labels[i]) !== labels.lastIndexOf(labels[i]);
+      const r = {
+        label: twin && q.label ? labels[i] + ' · ' + q.label : labels[i],
+        title: [q.label, q.plan].filter(Boolean).join(' · '),
+        short: CODEX_KEY + q.id,
+        kind,
+        abbr: q.minutes === 300 ? i18n.t('5h') : q.minutes === 10080 ? i18n.t('wk') : labels[i],
+        pct: q.pct,
+        level: q.level || levelOf(q.pct),
+        color: q.color || null,
+        resetAt: Number.isFinite(q.resetAt) ? q.resetAt : NaN
+      };
+      r.hitsAt = projectFull(r, c);
+      return r;
+    });
+  }
+
+  // One sample per poll period, as for Claude. The companion reads ChatGPT's
+  // quota again on every terminal or tab change, each reading with a fresh
+  // `updated`, so sampling every update let a busy user fill the forty slots
+  // in a few minutes: the history never spanned the fifteen minutes the
+  // projection needs, and when it did, it rested on a much shorter stretch
+  // than Claude's. A window reset still clears the history at once, and a
+  // limit seen for the first time is sampled straight away.
+  let codexSampleAt = 0;
+
+  function noteCodex(snap) {
+    if (snap && !snap.updated) codexSampleAt = 0;   // readings cleared (setting changed)
+    if (!snap || !snap.updated || snap.updated === codexSeen) return;
+    codexSeen = snap.updated;
+    const rows = snap.quotas.map(q => ({ short: CODEX_KEY + q.id, pct: q.pct }));
+    const fresh = rows.some(r => {
+      const h = HIST[r.short];
+      return !h || !h.length || r.pct < h[h.length - 1].pct - 0.5;
+    });
+    if (codexSampleAt && snap.updated - codexSampleAt < cfg().pollMs && !fresh) return;
+    codexSampleAt = snap.updated;
+    noteHistory(rows);
+  }
+
+  function codexPayload(snap, c) {
+    return Object.assign({}, snap, {
+      rows: codexRows(snap, c),
+      at: snap.updated ? fmtTime(snap.updated) : '',
+      next: snap.next ? fmtTime(snap.next) : ''
+    });
   }
 
   // ---- alerts: evaluated once, by the window that made the call, and
@@ -952,44 +1051,85 @@ function activate(context) {
 
   // Fingerprint of everything that's displayed: as long as it doesn't
   // change, we touch neither the status bar, nor the tree view, nor the webview.
-  function signature() {
+  function signature(snap) {
     if (!last) return '';
     let s = last.at + '|' + (last.error || '') + '|' + lastCacheAt +
             '|' + (last.credits ? last.credits.used + ':' + last.credits.pct : '');
     for (const r of last.rows) {
       s += '|' + r.short + ':' + r.pct.toFixed(1) + ':' + r.level + ':' + etaText(r.resetAt);
     }
+    // The ChatGPT counters tick down like Claude's, so their countdown belongs
+    // in the fingerprint too, or the status bar tooltip would freeze between
+    // two ChatGPT updates.
+    if (snap) {
+      s += '|' + snap.providers.join(',') + ':' + snap.updated + ':' + (snap.error || '');
+      for (const q of snap.quotas) s += '|' + q.id + ':' + q.pct.toFixed(1) + ':' + etaText(q.resetAt);
+    }
     return s;
   }
 
-  function renderHeaders() {
+  // What each displayed provider brings to the counters outside the panel,
+  // in one shape, so the status bar and the badge treat ChatGPT exactly like
+  // Claude. `named` says whether the provider's name has to lead its figures:
+  // Claude alone keeps its historic unnamed text, everything else is named.
+  function providerBlocks(snap) {
+    snap = snap || companion.snapshot();
+    const blocks = [];
+    if (snap.providers.includes('claude') && last) {
+      blocks.push({ name: 'Claude', title: 'Claude', rows: last.rows, error: last.error,
+        at: last.at, next: lastCacheAt ? fmtTime(lastCacheAt + cfg().pollMs) : '' });
+    }
+    if (snap.providers.includes('codex')) {
+      blocks.push({ name: 'ChatGPT', title: 'ChatGPT / Codex', rows: codexRows(snap, cfg()),
+        error: snap.error || null,          // a memory/vault setup issue is not a quota fault
+        at: snap.updated ? fmtTime(snap.updated) : '', next: snap.next ? fmtTime(snap.next) : '' });
+    }
+    const multi = blocks.length > 1;
+    for (const b of blocks) b.named = multi || b.name !== 'Claude';
+    return blocks;
+  }
+
+  function rowOfKind(rows, kind) { return rows.find(r => (r.kind || r.short) === kind); }
+
+  // The figure that speaks for a provider: the session, else the fullest limit.
+  function leadPct(rows) {
+    const s5 = rowOfKind(rows, '5h');
+    return s5 ? s5.pct : rows.reduce((m, r) => Math.max(m, r.pct), 0);
+  }
+
+  function renderHeaders(snap) {
     if (!last) return;
-    let head = '', badge;
-    if (last.rows.length) {
-      const s5 = last.rows.find(r => r.short === '5h');
-      const w7 = last.rows.find(r => r.short === 'sem');
+    let badge;
+    const blocks = providerBlocks(snap);
+    const multi = blocks.length > 1;
+    const segs = [];
+    let lead = null;
+    for (const b of blocks) {
+      const s5 = rowOfKind(b.rows, '5h');
+      const w7 = rowOfKind(b.rows, 'sem');
       const parts = [];
       if (s5) parts.push(Math.round(s5.pct) + '% ' + s5.abbr);
       if (w7) parts.push(Math.round(w7.pct) + '% ' + w7.abbr);
-      head = parts.join(' · ') + (last.error ? ' ⚠' : '');
-      // The activity-bar badge is numeric-only: VS Code's ViewBadge.value is a
-      // number, so it cannot carry a "%" sign, no API can. We show the session
-      // percentage as the bare number (67 for 67%) and put the "%" in the
-      // tooltip, the only place text is allowed. The session (5h) leads; the
-      // weekly figure stands in only if there is no session row. On by default,
-      // switched off from the settings.
-      if (cfg().badge) {
-        const lead = s5 || w7;
-        if (lead) {
-          const pct = Math.round(lead.pct);
-          if (pct > 0) badge = { value: pct, tooltip: lead.label + ' ' + pct + '%' };
-        }
-      }
+      if (!b.rows.length && !multi) continue;
+      segs.push((b.named ? b.name + ' ' : '') + (parts.length ? parts.join(multi ? ', ' : ' · ') : '…') +
+        (b.error ? ' ⚠' : ''));
+      const l = s5 || w7;
+      if (l && (!lead || l.pct > lead.row.pct)) lead = { row: l, block: b };
     }
-    const combined = companionSummary();
-    if (combined) {
-      head = combined.text;
-      badge = cfg().badge && combined.pct > 0 ? { value: Math.round(combined.pct), tooltip: combined.text } : undefined;
+    const head = segs.join(' · ');
+    // The activity-bar badge is numeric-only: VS Code's ViewBadge.value is a
+    // number, so it cannot carry a "%" sign, no API can. We show the session
+    // percentage as the bare number (67 for 67%) and put the "%" in the
+    // tooltip, the only place text is allowed. The session (5h) leads; the
+    // weekly figure stands in only if there is no session row. With both
+    // providers shown, the fuller of the two speaks. On by default, switched
+    // off from the settings.
+    if (cfg().badge && lead) {
+      const pct = Math.round(lead.row.pct);
+      if (pct > 0) {
+        badge = { value: pct, tooltip: multi ? head
+          : (lead.block.named ? lead.block.name + ' ' : '') + lead.row.label + ' ' + pct + '%' };
+      }
     }
     if (webviewView) {
       webviewView.description = head;
@@ -1022,73 +1162,78 @@ function activate(context) {
     status.backgroundColor = lvl === 'crit' ? BG_CRIT : BG_WARN;
   }
 
-  function companionSummary() {
-    const c = companion.snapshot();
-    if (!c.providers.includes('codex')) return null;
+  // Session spelled out by default; the week is added only when the user asks
+  // for it, or stands in when there is no session row at all. With both
+  // providers on one item, the short form keeps it to a glance.
+  function statusBrief(rows, short) {
+    const s5 = rowOfKind(rows, '5h');
+    const w7 = rowOfKind(rows, 'sem');
+    const week = w7 && (cfg().statusWeek || !s5);
     const parts = [];
-    let pct = 0;
-    if (c.providers.includes('claude')) {
-      const r = last && last.rows[0];
-      parts.push('Claude ' + (r ? Math.round(r.pct) + '%' : '…'));
-      if (r) pct = r.pct;
+    if (short) {
+      if (s5) parts.push(Math.round(s5.pct) + '%' + (week ? ' ' + s5.abbr : ''));
+      if (week) parts.push(Math.round(w7.pct) + '% ' + w7.abbr);
+      return parts.join(', ');
     }
-    const q = c.quotas[0];
-    parts.push('Codex ' + (q ? Math.round(q.pct) + '%' : '…') + (c.error ? ' ⚠' : ''));
-    if (q) pct = Math.max(pct, q.pct);
-    return { text: parts.join(' · '), pct };
+    if (s5) parts.push(i18n.t('session: {0}%', String(Math.round(s5.pct))));
+    if (week) parts.push(i18n.t('week: {0}%', String(Math.round(w7.pct))));
+    return parts.join(' · ');
   }
 
-  function renderStatus() {
+  function renderStatus(snap) {
     if (!cfg().statusBar) return;          // hidden: nothing to compute
-    const combined = companionSummary();
-    if (combined) {
-      status.text = '$(dashboard) ' + combined.text;
-      status.tooltip = combined.text + '\n' + i18n.t('Click to open the panel');
-      paintStatus(levelOf(combined.pct), combined.pct);
-      return;
-    }
-    if (!last.rows.length) {
-      status.text = '$(warning) Claude ?';
-      status.tooltip = i18n.t('Claude Limits, {0}', last.error || i18n.t('no data'));
+    const blocks = providerBlocks(snap);
+    const multi = blocks.length > 1;
+    const rows = [].concat(...blocks.map(b => b.rows));
+    const errors = blocks.map(b => b.error).filter(Boolean);
+    if (!rows.length) {
+      status.text = '$(warning) ' + (blocks.map(b => b.name).join(' · ') || 'Claude') + ' ?';
+      // Each provider's fault under its own name: a ChatGPT error shown as
+      // "Claude Limits, ..." sends the user looking in the wrong place. Claude
+      // alone keeps its historic wording.
+      status.tooltip = !blocks.length || (blocks.length === 1 && blocks[0].name === 'Claude')
+        ? i18n.t('Claude Limits, {0}', errors.join(' · ') || i18n.t('no data'))
+        : blocks.map(b => i18n.t('{0}: {1}', b.title, b.error || i18n.t('no data'))).join('\n');
       paintStatus('warn');
       return;
     }
-    const s5 = last.rows.find(r => r.short === '5h');
-    const w7 = last.rows.find(r => r.short === 'sem');
-    // Session spelled out by default; the week is added only when the user asks
-    // for it, or stands in when there is no session row at all.
-    const parts = [];
-    if (s5) parts.push(i18n.t('session: {0}%', String(Math.round(s5.pct))));
-    if (w7 && (cfg().statusWeek || !s5)) parts.push(i18n.t('week: {0}%', String(Math.round(w7.pct))));
     // $(dashboard) is a built-in gauge codicon: it echoes our activity-bar
     // gauge, unlike the old sparkle. The status bar only takes Codicons, so our
     // exact SVG cannot go here; this is the closest native match.
-    status.text = '$(dashboard) ' + parts.join(' · ') + (last.error ? ' $(warning)' : '');
-    const nextTxt = lastCacheAt
-      ? ' · ' + i18n.t('next ≈ {0}', fmtTime(lastCacheAt + cfg().pollMs)) : '';
-    status.tooltip = new vscode.MarkdownString(
-      last.rows.map(r => '**' + r.label + '**: ' + Math.round(r.pct) + '%, ' + etaText(r.resetAt)).join('\n\n') +
-      '\n\n_' + i18n.t('updated {0}', last.at) + nextTxt +
-      (last.error ? ', ⚠ ' + last.error : '') + '_' +
-      '\n\n_' + i18n.t('Click to open the panel') + '_'
-    );
+    status.text = '$(dashboard) ' + blocks.map(b =>
+      (b.named ? b.name + ' ' : '') + (statusBrief(b.rows, multi) || '…')).join(' · ') +
+      (errors.length ? ' $(warning)' : '');
+    // Same tooltip for every provider: each row with its countdown, then when
+    // the figures were read and when they will be read again.
+    status.tooltip = new vscode.MarkdownString(blocks.map(b => {
+      const lines = b.rows.map(r => {
+        const eta = etaText(r.resetAt);
+        return '**' + r.label + '**: ' + Math.round(r.pct) + '%' + (eta ? ', ' + eta : '');
+      });
+      lines.push('_' + (b.at ? i18n.t('updated {0}', b.at) : i18n.t('no data')) +
+        (b.next ? ' · ' + i18n.t('next ≈ {0}', b.next) : '') +
+        (b.error ? ', ⚠ ' + b.error : '') + '_');
+      return (b.named ? '**' + b.title + '**\n\n' : '') + lines.join('\n\n');
+    }).join('\n\n---\n\n') + '\n\n_' + i18n.t('Click to open the panel') + '_');
     // The session drives the colour, because that is the number the bar shows
     // and the one that empties within the day. Without a session row, the
-    // fullest limit stands in rather than leaving the scale unread.
-    const pct = s5 ? s5.pct : last.rows.reduce((m, r) => Math.max(m, r.pct), 0);
-    paintStatus(worstLevel(last.rows), pct);
+    // fullest limit stands in rather than leaving the scale unread. With both
+    // providers, the fuller one decides.
+    paintStatus(worstLevel(rows), Math.max(...blocks.map(b => leadPct(b.rows))));
   }
 
   function render(force) {
+    const snap = companion.snapshot();
     if (!last) {
-      if (!companion.snapshot().providers.includes('codex')) return;
+      if (!snap.providers.includes('codex')) return;
       last = { rows: [], error: null, at: '' };
     }
-    const sig = signature();
+    noteCodex(snap);
+    const sig = signature(snap);
     if (!force && sig === lastSig) return;
     lastSig = sig;
-    renderStatus();
-    renderHeaders();
+    renderStatus(snap);
+    renderHeaders(snap);
     postPayload();
   }
 
@@ -1363,6 +1508,7 @@ function panelStrings() {
     loading: t('loading…'),
     session5h: t('Session (5h)'),
     week: t('Week'),
+    codexEmpty: t('No subscription quota returned'),
     resetsSoon: t('resets soon'),
     resetsH: t('resets in {0}h {1}', '{0}', '{1}'),
     resetsD: t('resets in {0}d {1}h', '{0}', '{1}'),
@@ -1405,7 +1551,35 @@ function panelStrings() {
     sortRecent: t('Newest first'),
     sortOldest: t('Oldest first'),
     sortName: t('Name (A to Z)'),
-    runningOut: t('{0} key(s) running out', '{0}')
+    runningOut: t('{0} key(s) running out', '{0}'),
+    // groups and separators
+    ungrouped: t('Ungrouped'),
+    noGroup: t('No group'),
+    group: t('Group'),
+    groupNamePh: t('Group name'),
+    newGroup: t('New group'),
+    newGroupDots: t('New group…'),
+    newSeparator: t('New separator'),
+    separator: t('Separator'),
+    suggestGroups: t('Suggest groups'),
+    collapseAll: t('Collapse all'),
+    expandAll: t('Expand all'),
+    groupEmpty: t('Empty group: drag keys here or use Move to group'),
+    newKeyInGroup: t('New key in this group'),
+    moveUp: t('Move up'),
+    moveDown: t('Move down'),
+    groupMcpAllow: t('Allow MCP for the group'),
+    groupMcpRemove: t('Remove MCP for the group'),
+    deleteGroup: t('Delete group (keys kept)'),
+    editLabel: t('Edit label'),
+    removeSep: t('Remove'),
+    moveToGroup: t('Move to group'),
+    keysCount: t('{0} key(s)', '{0}'),
+    mcpCount: t('{0} allowed for MCP', '{0}'),
+    foldedAlert: t('A folded key is old or running out'),
+    tagRequest: t('MCP access requested: waiting for your answer'),
+    aiAuto: t('Automatic MCP access is on: the AI grants and removes access on its own.'),
+    shownOf: t('{0} of {1} shown', '{0}', '{1}')
   };
 }
 
@@ -1522,6 +1696,48 @@ function getHtml(T) {
   #stools #ssearch { flex: 1 1 auto; min-width: 0; font-size: 11.5px; padding: 3px 8px; }
   #stools #ssort { flex: 0 0 auto; font-size: 11px; padding: 3px 4px; cursor: pointer; }
   #stools input:focus, #stools select:focus { outline: 1px solid var(--vscode-focusBorder); }
+  /* ---------- groups and separators ----------
+     Folders in a sidebar: a twisty, a name, counts on the right. Keys are never
+     removed from the DOM when a group folds or a search filters them out: they
+     are hidden by a class, so the index-based updates keep their alignment. */
+  .key.khide { display: none; }
+  .key[data-gid] { padding-left: 17px; }
+  .ghead { display: flex; align-items: center; gap: 6px; margin: 8px -6px 2px; padding: 3px 6px;
+           border-radius: 3px; cursor: pointer; font-size: 11px; font-weight: 600; }
+  .ghead:hover { background: var(--vscode-list-hoverBackground); }
+  .ghead:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .ghead .gtw { flex: 0 0 auto; width: 9px; font-size: 10px; opacity: .6;
+                display: inline-block; transition: transform .12s ease; transform: rotate(90deg); }
+  .ghead.folded .gtw { transform: none; }
+  .ghead .gname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ghead .gcnt { flex: 0 0 auto; font-size: 10px; font-weight: 400; opacity: .45;
+                 font-variant-numeric: tabular-nums; }
+  .ghead .gmcp { flex: 0 0 auto; font-size: 9px; font-weight: 600; letter-spacing: .4px;
+                 text-transform: uppercase; color: var(--vscode-charts-blue); opacity: .75; }
+  .ghead .gdot { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%;
+                 background: var(--vscode-charts-yellow); }
+  .ghead.gnone { cursor: default; opacity: .7; }
+  .ghead.gnone:hover { background: none; }
+  .gempty { font-size: 10.5px; opacity: .45; padding: 2px 0 6px 17px; line-height: 1.4; }
+  .lsep { display: flex; align-items: center; gap: 7px; margin: 10px 0 6px; min-height: 9px;
+          font-size: 9.5px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase;
+          cursor: grab; }
+  .lsep::before, .lsep::after { content: ''; flex: 1 1 auto; height: 1px;
+          background: color-mix(in srgb, var(--vscode-foreground) 16%, transparent); }
+  .lsep span { flex: 0 1 auto; opacity: .5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lsep:empty::before { flex-basis: 100%; }
+  .lsep:empty::after { display: none; }
+  .lsep:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+  .aiauto { font-size: 10px; opacity: .6; margin: 0 0 8px; cursor: pointer; }
+  .aiauto:hover { opacity: 1; text-decoration: underline; }
+  .tag.req { color: var(--vscode-charts-orange);
+             border-color: color-mix(in srgb, var(--vscode-charts-orange) 45%, transparent); }
+  /* Drag and drop: the target lights up, a line shows where an item lands. */
+  .dragging { opacity: .4; }
+  .ghead.dropin, .gempty.dropin { background: color-mix(in srgb, var(--vscode-focusBorder) 18%, transparent); }
+  .dropbefore { box-shadow: inset 0 2px 0 var(--vscode-focusBorder); }
+  .dropafter { box-shadow: inset 0 -2px 0 var(--vscode-focusBorder); }
+  #fgrpnew { margin-top: -1px; }
   /* ---------- creation form, inside the panel ---------- */
   #form { margin-bottom: 12px; }
   #form input[type="text"], #form input[type="password"], #form select {
@@ -1646,6 +1862,12 @@ function getHtml(T) {
     <div id="ferr" class="ferr" hidden></div>
     <input id="fval" type="password" placeholder="${esc(T.pasteValue)}" spellcheck="false"
            autocomplete="new-password">
+    <select id="fgrp" title="${esc(T.group)}" aria-label="${esc(T.group)}">
+      <option value="">${esc(T.noGroup)}</option>
+      <option value="#new">${esc(T.newGroupDots)}</option>
+    </select>
+    <input id="fgrpnew" type="text" placeholder="${esc(T.groupNamePh)}" spellcheck="false"
+           autocomplete="off" maxlength="40" hidden>
     <button id="fopt" class="lien" aria-expanded="false">${esc(T.options)}</button>
     <div id="fopts" hidden>
       <label>${esc(T.expiry)}
@@ -1700,6 +1922,10 @@ function getHtml(T) {
   // A single delegated listener for the whole panel: buttons created during
   // mounting don't need to be rewired on every render.
   document.body.addEventListener('click', function (e) {
+    // A group header folds or unfolds. It carries no data-act and no
+    // data-name, so it can never be mistaken for a key.
+    var gh = e.target.closest('.ghead[data-gid]');
+    if (gh) { toggleGroup(gh.getAttribute('data-gid')); return; }
     var b = e.target.closest('[data-act]');
     if (!b) return;
     var host = b.closest('[data-name]');
@@ -1711,6 +1937,18 @@ function getHtml(T) {
   });
   // Right click on a key opens the same dropdown, at the cursor.
   root.addEventListener('contextmenu', function (e) {
+    // Group headers and separators have their own menus, reachable from the
+    // keyboard too: both are focusable, and the menu key fires this event.
+    var gh = e.target.closest('.ghead[data-gid]');
+    var sp = gh ? null : e.target.closest('.lsep[data-item]');
+    if (gh || sp) {
+      e.preventDefault();
+      var rr = (gh || sp).getBoundingClientRect();
+      var mx = e.clientX || rr.left + 12, my = e.clientY || rr.bottom;
+      if (gh) openGroupMenu(gh.getAttribute('data-gid'), mx, my);
+      else openSepMenu(sp.getAttribute('data-item'), mx, my);
+      return;
+    }
     var key = e.target.closest('.key[data-name]');
     if (key) {
       e.preventDefault();
@@ -1738,12 +1976,12 @@ function getHtml(T) {
 
   // Both menus — a key's actions and the panel's own — share this renderer:
   // same look, same clamping, same keyboard exit.
-  function showMenu(title, items, x, y, name) {
+  function showMenu(title, items, x, y, name, ctx) {
     var html = title ? '<div class="mtitle">' + esc(title) + '</div>' : '';
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
       if (it.sep) { html += '<div class="msep"></div>'; continue; }
-      html += '<button type="button" data-mact="' + it.act + '"' + (it.danger ? ' class="danger"' : '') + '>' +
+      html += '<button type="button" data-mact="' + esc(it.act) + '"' + (it.danger ? ' class="danger"' : '') + '>' +
               '<span>' + esc(it.label) + '</span>' +
               (it.hint ? '<span class="mhint">' + esc(it.hint) + '</span>' : '') + '</button>';
     }
@@ -1756,6 +1994,82 @@ function getHtml(T) {
     var first = kmenu.querySelector('button');
     if (first) first.focus();
     kmenu.__name = name || null;
+    // What the menu is about (a key, a group, a separator), and where it was
+    // opened, so a submenu can open in the same place.
+    kmenu.__ctx = ctx || { kind: name ? 'key' : 'pane' };
+    kmenu.__x = x; kmenu.__y = y;
+  }
+
+  // ---- the layout as the panel last received it
+  function layoutOf() {
+    var v = lastData && lastData.vault;
+    return (v && v.layout) || [];
+  }
+  function itemOf(id) {
+    var items = layoutOf();
+    for (var i = 0; i < items.length; i++) if (items[i] && items[i].id === id) return items[i];
+    return null;
+  }
+  function groupsList() {
+    return layoutOf().filter(function (x) { return x && x.type === 'group'; });
+  }
+
+  // Folding shows at once; the host stores it in the layout so it survives a
+  // refresh or a restart, and the next payload brings back the stored truth.
+  function toggleGroup(id) {
+    var g = itemOf(id);
+    if (!g || g.type !== 'group') return;
+    g.collapsed = !g.collapsed;
+    applySearch();
+    api.postMessage({ type: 'groupToggle', id: id });
+  }
+  function foldAll(on) {
+    var gs = groupsList();
+    for (var i = 0; i < gs.length; i++) gs[i].collapsed = !!on;
+    applySearch();
+    api.postMessage({ type: on ? 'collapseAll' : 'expandAll' });
+  }
+
+  function openGroupMenu(id, x, y) {
+    var g = itemOf(id);
+    if (!g) return;
+    showMenu(g.name, [
+      { act: '#newkeyin', label: T.newKeyInGroup, hint: '+' },
+      { act: 'rename', label: T.actRename },
+      { act: 'up', label: T.moveUp },
+      { act: 'down', label: T.moveDown },
+      { sep: true },
+      { act: 'mcpAllow', label: T.groupMcpAllow },
+      { act: 'mcpRemove', label: T.groupMcpRemove },
+      { sep: true },
+      { act: 'delete', label: T.deleteGroup, danger: true }
+    ], x, y, null, { kind: 'group', id: id });
+  }
+
+  function openSepMenu(id, x, y) {
+    var s = itemOf(id);
+    if (!s) return;
+    showMenu(s.label || T.separator, [
+      { act: 'edit', label: T.editLabel },
+      { act: 'up', label: T.moveUp },
+      { act: 'down', label: T.moveDown },
+      { sep: true },
+      { act: 'remove', label: T.removeSep, danger: true }
+    ], x, y, null, { kind: 'sep', id: id });
+  }
+
+  // Move to group: the existing groups, a new one, or none.
+  function openMoveMenu(name, x, y) {
+    var s = secretByName(name);
+    var gs = groupsList(), items = [];
+    for (var i = 0; i < gs.length; i++) {
+      if (s && s.groupId === gs[i].id) continue;
+      items.push({ act: 'g:' + gs[i].id, label: gs[i].name });
+    }
+    if (items.length) items.push({ sep: true });
+    items.push({ act: '#new', label: T.newGroupDots });
+    if (s && s.groupId) items.push({ act: '#none', label: T.noGroup });
+    showMenu(T.moveToGroup + ' · ' + name, items, x, y, name, { kind: 'move', name: name });
   }
 
   function openMenu(name, x, y) {
@@ -1771,6 +2085,7 @@ function getHtml(T) {
       { act: 'confirm', label: (s && s.confirm) ? T.actConfirmOff : T.actConfirmOn },
       { act: 'mcpserver', label: T.actMcpServer },
       { act: 'mcp', label: (s && s.mcp) ? T.actMcpRemove : T.actMcpAllow },
+      { act: '#movekey', label: T.moveToGroup, hint: (s && s.group) || '' },
       { act: 'reveal', label: T.actReveal },
       { sep: true },
       { act: 'del', label: T.actDelete, danger: true }
@@ -1783,6 +2098,12 @@ function getHtml(T) {
   function openPaneMenu(x, y) {
     showMenu(null, [
       { act: '#newkey', label: T.newKey, hint: '+' },
+      { act: 'newGroup', label: T.newGroup },
+      { act: 'newSeparator', label: T.newSeparator },
+      { act: 'suggestGroups', label: T.suggestGroups },
+      { act: '#collapseAll', label: T.collapseAll },
+      { act: '#expandAll', label: T.expandAll },
+      { sep: true },
       { act: 'terminal', label: T.vaultTerminal },
       { sep: true },
       { act: 'audit', label: T.auditLog },
@@ -1795,10 +2116,28 @@ function getHtml(T) {
     var b = e.target.closest('[data-mact]');
     if (!b) return;
     var act = b.getAttribute('data-mact'), name = kmenu.__name;
+    var ctx = kmenu.__ctx || {}, mx = kmenu.__x, my = kmenu.__y;
     closeMenu();
     // '#' prefix: handled here, in the panel, with no round trip to the host.
     if (act === '#newkey') { ouvrirForm(true); return; }
+    if (act === '#newkeyin') { ouvrirForm(true, ctx.id); return; }
+    if (act === '#movekey') { openMoveMenu(name, mx, my); return; }
+    if (act === '#collapseAll') { foldAll(true); return; }
+    if (act === '#expandAll') { foldAll(false); return; }
+    if (ctx.kind === 'group') { api.postMessage({ type: 'groupMenuAct', act: act, id: ctx.id }); return; }
+    if (ctx.kind === 'sep') { api.postMessage({ type: 'sepMenuAct', act: act, id: ctx.id }); return; }
+    if (ctx.kind === 'move') {
+      if (act === '#new') api.postMessage({ type: 'moveKeyNew', name: ctx.name });
+      else if (act === '#none') api.postMessage({ type: 'moveKey', name: ctx.name, groupId: null });
+      else if (act.indexOf('g:') === 0) api.postMessage({ type: 'moveKey', name: ctx.name, groupId: act.slice(2) });
+      return;
+    }
     api.postMessage({ type: act, name: name });
+  });
+  // Enter or Space on a focused group header folds it, like a click.
+  root.addEventListener('keydown', function (e) {
+    var gh = e.target.closest && e.target.closest('.ghead[data-gid]');
+    if (gh && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleGroup(gh.getAttribute('data-gid')); }
   });
   document.addEventListener('click', function (e) {
     if (!kmenu.hidden && !kmenu.contains(e.target) && !e.target.closest('.key')) closeMenu();
@@ -1812,22 +2151,189 @@ function getHtml(T) {
   // which keeps the mounted references aligned with the data.
   var sortMode = 'recent';   // recent (default) | old | name
   var searchText = '';
+  // Layout order first (the groups as they were placed, ungrouped keys last),
+  // then the sort mode inside each group. The DOM is built from this array in
+  // this order, which is what keeps refs.keys[i] the row of v.secrets[i].
   function sortSecrets(v) {
     if (!v || !v.secrets) return;
+    var rank = {}, n = 0, items = v.layout || [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i] && items[i].type === 'group') rank[items[i].id] = n++;
+    }
+    var rankOf = function (s) {
+      return s.groupId && Object.prototype.hasOwnProperty.call(rank, s.groupId) ? rank[s.groupId] : n;
+    };
     v.secrets.sort(function (a, b) {
+      var ra = rankOf(a), rb = rankOf(b);
+      if (ra !== rb) return ra - rb;
       if (sortMode === 'name') return a.name.localeCompare(b.name);
       var ca = a.createdAt || 0, cb = b.createdAt || 0;
       return sortMode === 'old' ? ca - cb : cb - ca;   // recent first by default
     });
   }
+
+  function runningOut(s) {
+    if (s.maxUses) return Math.max(0, s.maxUses - s.uses) <= 1;
+    var l = lifeOf(s);
+    return !!(l && l.left < 600000);
+  }
+
+  // Visibility is decided here and only here. Folded groups and the search
+  // both hide keys with a class, never by removing them, so the index-based
+  // updates stay aligned. Search matches name, group and description; a folded
+  // group opens for display only while the search finds something in it.
   function applySearch() {
+    var v = lastData && lastData.vault;
+    var box = document.getElementById('secrets');
+    if (!v || !v.secrets || !box) return;
     var q = searchText.trim().toLowerCase();
-    var keys = document.querySelectorAll('#secrets .key');
-    for (var i = 0; i < keys.length; i++) {
-      var n = (keys[i].getAttribute('data-name') || '').toLowerCase();
-      keys[i].style.display = (!q || n.indexOf(q) !== -1) ? '' : 'none';
+    var keys = box.querySelectorAll('.key');
+    var folded = {}, items = v.layout || [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i] && items[i].type === 'group') folded[items[i].id] = !!items[i].collapsed;
+    }
+    var st = {}, shown = 0;
+    for (var k = 0; k < v.secrets.length && k < keys.length; k++) {
+      var s = v.secrets[k];
+      var gid = s.groupId && Object.prototype.hasOwnProperty.call(folded, s.groupId) ? s.groupId : '';
+      var hit = !q || s.name.toLowerCase().indexOf(q) !== -1 ||
+        (!!s.group && String(s.group).toLowerCase().indexOf(q) !== -1) ||
+        (!!s.note && String(s.note).toLowerCase().indexOf(q) !== -1);
+      var g = st[gid] || (st[gid] = { n: 0, mcp: 0, hit: 0, alert: 0 });
+      g.n++;
+      if (s.mcp) g.mcp++;
+      if (hit) { g.hit++; shown++; }
+      if (staleOf(s) || runningOut(s)) g.alert++;
+      var hide = !hit || (!q && !!folded[gid]);
+      if (keys[k].classList.contains('khide') !== hide) keys[k].classList.toggle('khide', hide);
+    }
+    var heads = box.querySelectorAll('.ghead');
+    for (var h = 0; h < heads.length; h++) {
+      var id = heads[h].getAttribute('data-gid') || '';
+      var gs = st[id] || { n: 0, mcp: 0, hit: 0, alert: 0 };
+      var isFold = !!folded[id] && !(q && gs.hit);
+      if (heads[h].classList.contains('folded') !== isFold) heads[h].classList.toggle('folded', isFold);
+      if (id) heads[h].setAttribute('aria-expanded', isFold ? 'false' : 'true');
+      heads[h].hidden = !!q && !gs.hit;
+      var c = heads[h].querySelector('.gcnt');
+      if (c) { setText(c, String(gs.n)); c.title = fmt(T.keysCount, gs.n); }
+      var m = heads[h].querySelector('.gmcp');
+      if (m) { setText(m, gs.mcp ? gs.mcp + ' mcp' : ''); m.hidden = !gs.mcp; m.title = fmt(T.mcpCount, gs.mcp); }
+      var d = heads[h].querySelector('.gdot');
+      if (d) { d.hidden = !(folded[id] && !q && gs.alert); d.title = T.foldedAlert; }
+    }
+    // Separators and empty groups say nothing about a search result, and the
+    // notice of an empty group folds away with its group like any key would.
+    var quiet = box.querySelectorAll('.lsep, .gempty');
+    for (var j = 0; j < quiet.length; j++) {
+      var qg = quiet[j].classList.contains('gempty') ? quiet[j].getAttribute('data-gid') : '';
+      quiet[j].hidden = !!q || (!!qg && !!folded[qg]);
+    }
+    var cnt = document.getElementById('cnt');
+    if (cnt) {
+      setText(cnt, !v.secrets.length ? '' : (q ? shown + '/' + v.secrets.length : String(v.secrets.length)));
+      cnt.title = q ? fmt(T.shownOf, shown, v.secrets.length) : '';
     }
   }
+
+  // ---- drag and drop. Keys go into groups; groups and separators move among
+  // themselves. The panel only says what was dropped where: the host checks
+  // it, and the next payload redraws the list in its new order.
+  var drag = null;
+  var secretsBox = document.getElementById('secrets');
+  function cssId(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : s; }
+  function clearMarks() {
+    var marked = secretsBox.querySelectorAll('.dropin, .dropbefore, .dropafter');
+    for (var i = 0; i < marked.length; i++) marked[i].classList.remove('dropin', 'dropbefore', 'dropafter');
+  }
+  function clearDrag() {
+    clearMarks();
+    var d = secretsBox.querySelectorAll('.dragging');
+    for (var i = 0; i < d.length; i++) d[i].classList.remove('dragging');
+  }
+  function headOf(gid) {
+    return gid ? secretsBox.querySelector('.ghead[data-gid="' + cssId(gid) + '"]')
+               : secretsBox.querySelector('.ghead.gnone');
+  }
+  // A key dropped on a header, an empty-group notice or another key lands in
+  // that group; the "Ungrouped" header takes it out of any group.
+  function keyTarget(el) {
+    var t = el && el.closest ? el.closest('.ghead, .gempty, .key') : null;
+    if (!t || !secretsBox.contains(t)) return null;
+    if (t.classList.contains('gnone')) return { gid: null, el: t };
+    var gid = t.getAttribute('data-gid') || null;
+    if (t.classList.contains('key')) {
+      var head = headOf(gid);
+      if (!head) return null;
+      return { gid: gid, el: head };
+    }
+    return { gid: gid, el: t };
+  }
+  // A group or separator lands before or after the item under the pointer.
+  // Over a group's keys it lands after that group; over the ungrouped part,
+  // at the end of the layout.
+  function itemTarget(el, y) {
+    var t = el && el.closest ? el.closest('.ghead, .lsep, .gempty, .key') : null;
+    if (!t || !secretsBox.contains(t)) return null;
+    if (t.classList.contains('gnone')) return { id: null, before: true, el: t };
+    if (t.classList.contains('key') || t.classList.contains('gempty')) {
+      var gid = t.getAttribute('data-gid');
+      if (!gid) { var none = headOf(null); return none ? { id: null, before: true, el: none } : null; }
+      var rows = secretsBox.querySelectorAll('.key[data-gid="' + cssId(gid) + '"], .gempty[data-gid="' + cssId(gid) + '"]');
+      return { id: gid, before: false, el: rows.length ? rows[rows.length - 1] : t };
+    }
+    var r = t.getBoundingClientRect();
+    return { id: t.getAttribute('data-item'), before: y < r.top + r.height / 2, el: t };
+  }
+  function targetOf(e) {
+    return drag.kind === 'key' ? keyTarget(e.target) : itemTarget(e.target, e.clientY);
+  }
+  secretsBox.addEventListener('dragstart', function (e) {
+    var el = e.target && e.target.closest ? e.target.closest('.key, .ghead[data-item], .lsep[data-item]') : null;
+    if (!el) return;
+    // A flat list has nowhere to drop; a filtered list hides the separators.
+    if (!layoutOf().length || (!el.classList.contains('key') && searchText.trim())) { e.preventDefault(); return; }
+    drag = el.classList.contains('key')
+      ? { kind: 'key', name: el.getAttribute('data-name'), gid: el.getAttribute('data-gid') || null }
+      : { kind: 'item', id: el.getAttribute('data-item') };
+    el.classList.add('dragging');
+    closeMenu();
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', drag.name || drag.id);
+    } catch (x) { /* some hosts refuse custom data: the drag still works */ }
+  });
+  secretsBox.addEventListener('dragover', function (e) {
+    if (!drag) return;
+    var tgt = targetOf(e);
+    clearMarks();
+    if (!tgt) return;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = 'move'; } catch (x) { /* read-only in some hosts */ }
+    tgt.el.classList.add(drag.kind === 'key' ? 'dropin' : (tgt.before ? 'dropbefore' : 'dropafter'));
+  });
+  secretsBox.addEventListener('drop', function (e) {
+    if (!drag) return;
+    e.preventDefault();
+    var d = drag, tgt = targetOf(e);
+    drag = null;
+    clearDrag();
+    if (!tgt) return;
+    if (d.kind === 'key') {
+      if ((tgt.gid || null) !== (d.gid || null)) {
+        api.postMessage({ type: 'moveKey', name: d.name, groupId: tgt.gid || null });
+      }
+      return;
+    }
+    var ids = layoutOf().map(function (x) { return x.id; });
+    var from = ids.indexOf(d.id);
+    if (from < 0) return;
+    var at = tgt.id ? ids.indexOf(tgt.id) + (tgt.before ? 0 : 1) : ids.length;
+    if (at < 0) return;
+    if (from < at) at--;                 // the item leaves its old slot first
+    if (at !== from) api.postMessage({ type: 'moveItem', id: d.id, toIndex: at });
+  });
+  document.addEventListener('dragend', function () { drag = null; clearDrag(); });
   var searchEl = document.getElementById('ssearch');
   var sortEl = document.getElementById('ssort');
   if (searchEl) searchEl.addEventListener('input', function () { searchText = searchEl.value; applySearch(); });
@@ -1852,7 +2358,28 @@ function getHtml(T) {
   var fttl = document.getElementById('fttl');
   var fmcp = document.getElementById('fmcp');
   var fok = document.getElementById('fok');
+  var fgrp = document.getElementById('fgrp');
+  var fgrpnew = document.getElementById('fgrpnew');
   var defaults = null;               // sent by the extension along with the payload
+  var groupsSig = null;
+
+  // The group selector is part of the static form, so it is refilled in place
+  // when the groups change, keeping whatever was selected.
+  function fillGroups() {
+    var gs = groupsList();
+    var sig = gs.map(function (g) { return g.id + ':' + g.name; }).join('|');
+    if (sig === groupsSig) return;
+    groupsSig = sig;
+    var keep = fgrp.value;
+    var h = '<option value="">' + esc(T.noGroup) + '</option>';
+    for (var i = 0; i < gs.length; i++) h += '<option value="' + esc(gs[i].id) + '">' + esc(gs[i].name) + '</option>';
+    h += '<option value="#new">' + esc(T.newGroupDots) + '</option>';
+    fgrp.innerHTML = h;
+    fgrp.value = keep;
+    if (fgrp.value !== keep) fgrp.value = '';
+    syncGroupInput();
+  }
+  function syncGroupInput() { fgrpnew.hidden = fgrp.value !== '#new'; }
 
   function nomValide(n) {
     if (!n) return { msg: T.nameRequired, dur: true };
@@ -1873,12 +2400,18 @@ function getHtml(T) {
     setText(ferr, msg || '');
     ferr.hidden = !msg;
     fnom.classList.toggle('faux', bloquant);
-    fok.disabled = !n || bloquant || !fval.value;
+    fok.disabled = !n || bloquant || !fval.value ||
+      (fgrp.value === '#new' && !fgrpnew.value.trim());
   }
 
-  function ouvrirForm(ouvrir) {
+  // gid: open the form already pointing at that group ("New key in this group").
+  function ouvrirForm(ouvrir, gid) {
     form.hidden = !ouvrir;
-    if (!ouvrir) { fnom.value = ''; fval.value = ''; verifier(); return; }
+    if (!ouvrir) { fnom.value = ''; fval.value = ''; fgrpnew.value = ''; verifier(); return; }
+    fillGroups();
+    fgrp.value = gid || '';
+    if (fgrp.value !== (gid || '')) fgrp.value = '';
+    syncGroupInput();
     if (defaults) {
       fttl.value = defaults.burn ? 'burn' : String(defaults.ttlMs || 0);
       fmcp.checked = !!defaults.mcp;
@@ -1894,7 +2427,9 @@ function getHtml(T) {
       type: 'create', name: n, value: fval.value,
       ttlMs: fttl.value === 'burn' ? 0 : Number(fttl.value),
       burn: fttl.value === 'burn',
-      mcp: !!fmcp.checked
+      mcp: !!fmcp.checked,
+      groupId: fgrp.value && fgrp.value !== '#new' ? fgrp.value : null,
+      groupName: fgrp.value === '#new' ? fgrpnew.value.trim() : null
     });
     fval.value = '';               // the value doesn't stick around a millisecond longer
     fnom.value = '';
@@ -1912,8 +2447,19 @@ function getHtml(T) {
   fok.addEventListener('click', envoyer);
   fnom.addEventListener('input', verifier);
   fval.addEventListener('input', verifier);
+  fgrpnew.addEventListener('input', verifier);
+  fgrp.addEventListener('change', function () {
+    syncGroupInput();
+    verifier();
+    if (!fgrpnew.hidden) fgrpnew.focus();
+  });
   form.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); envoyer(); }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      // Enter in the group fields chooses a group; it does not create the key.
+      if (e.target === fgrp || e.target === fgrpnew) return;
+      envoyer();
+    }
     else if (e.key === 'Escape') { e.preventDefault(); ouvrirForm(false); }
   });
 
@@ -2037,28 +2583,136 @@ function getHtml(T) {
     if(d.companion) k += '|assistant:' + d.companion.providers.join(',') + ':' + d.companion.setupReady;
     k += '|s:' + (v.connected ? 1 : 0) + (v.needsUpdate ? 1 : 0) +
          (v.recovery ? 1 : 0) + ':' + (v.issues || []).length + ':';
+    var pend = {}, pl = v.pending || [];
+    for (var p = 0; p < pl.length; p++) pend[pl[p]] = 1;
     for (var j = 0; j < v.secrets.length; j++) {
       k += v.secrets[j].name + (v.secrets[j].maxUses ? '#' : (v.secrets[j].expiresAt ? '@' : '-')) +
-           (v.secrets[j].mcp ? '+' : '') + (v.secrets[j].pub ? 'P' : '') +
+           (v.secrets[j].mcp ? '+' + (v.secrets[j].mcpServers || []).join('+') : '') +
+           (v.secrets[j].pub ? 'P' : '') +
            (v.secrets[j].confirm ? 'C' : '') +
+           (pend[v.secrets[j].name] ? 'R' : '') +
+           '/' + (v.secrets[j].groupId || '') +
            (staleOf(v.secrets[j]) ? '!' : '') + ',';
     }
+    // The layout's shape, not its folded state: folding only toggles classes,
+    // it never needs a remount.
+    var items = v.layout || [];
+    k += '|L:';
+    for (var l = 0; l < items.length; l++) {
+      if (items[l]) k += (items[l].type === 'group' ? 'g' : 's') + items[l].id + '=' + (items[l].name || items[l].label || '') + ';';
+    }
+    k += '|A:' + (v.policy && v.policy.auto ? 1 : 0);
     return k;
   }
 
   // The mounting functions RETURN HTML instead of writing into the panel:
   // both halves are assembled in a single pass by mountAll().
-  function htmlFull(rows) {
+  // One row markup for both providers: label, percentage, bar, reset line.
+  // The ChatGPT block is drawn and updated by these very functions, so the two
+  // blocks can only ever differ by the colour their container gives them.
+  function rowsHtml(rows) {
     var h = '';
     for (var i = 0; i < rows.length; i++) {
-      h += '<div class="row"><div class="top"><span>' + esc(rows[i].label) +
+      h += '<div class="row"' + (rows[i].title ? ' title="' + esc(rows[i].title) + '"' : '') +
+           '><div class="top"><span>' + esc(rows[i].label) +
            '</span><span class="pct"></span></div>' +
            '<div class="bar" role="progressbar" aria-label="' + esc(rows[i].label) +
            '" aria-valuemin="0" aria-valuemax="100"><div class="fill"></div></div>' +
            '<div class="eta"></div></div>';
     }
-    return h + '<div id="cred"></div><div class="warnmsg" hidden></div>' +
+    return h;
+  }
+
+  function htmlFull(rows) {
+    return rowsHtml(rows) + '<div id="cred"></div><div class="warnmsg" hidden></div>' +
            '<div class="pausemsg" hidden></div><div class="at"></div>';
+  }
+
+  // Taken right after mounting, before anything else (the credits row) lands
+  // in the block with the same classes.
+  function rowRefs(el) {
+    return {
+      row: el.querySelectorAll('.row'),
+      pct: el.querySelectorAll('.pct'),
+      bar: el.querySelectorAll('.bar'),
+      fill: el.querySelectorAll('.fill'),
+      eta: el.querySelectorAll('.eta')
+    };
+  }
+
+  // Same percentage, level classes, countdown and projection for every row,
+  // whoever the provider. A row that names a colour (ChatGPT's own palette,
+  // custom setting included) gets it through --quota-color; the rest of the
+  // look is shared.
+  function paintRows(rf, rows) {
+    for (var i = 0; i < rows.length; i++) {
+      if (!rf.pct[i] || !rf.fill[i]) continue;
+      var r = rows[i], p = Math.round(r.pct);
+      setText(rf.pct[i], p + '%');
+      setClass(rf.pct[i], 'pct ' + r.level);
+      setClass(rf.fill[i], 'fill ' + r.level);
+      var w = Math.max(0, Math.min(r.pct, 100)) + '%';
+      if (rf.fill[i].style.width !== w) rf.fill[i].style.width = w;
+      rf.bar[i].setAttribute('aria-valuenow', p);
+      setText(rf.eta[i], etaText(r.resetAt) +
+        (r.hitsAt ? ' · ' + fmt(T.hitsAt, clockOf(r.hitsAt)) : ''));
+      var col = /^[a-z]+(\\.[a-z]+)?$/i.test(r.color || '')
+        ? 'var(--vscode-' + r.color.replace('.', '-') + ')' : '';
+      if (rf.row[i] && rf.row[i].style.getPropertyValue('--quota-color') !== col) {
+        if (col) rf.row[i].style.setProperty('--quota-color', col);
+        else rf.row[i].style.removeProperty('--quota-color');
+      }
+    }
+  }
+
+  function footText(b) {
+    if (!b.at) return '';
+    return b.pause ? fmt(T.updatedPaused, b.at)
+      : (b.next ? fmt(T.updatedNext, b.at, b.next) : fmt(T.updated, b.at));
+  }
+
+  // The ChatGPT block: the same skeleton while loading, the same rows, the
+  // same warning line and the same footer as the Claude block. Its own
+  // structure signature, so a Claude refresh never remounts it.
+  var cstruct = '', crefs = null;
+  function codexRowsOf(c) {
+    if (c.rows) return c.rows;
+    // An older host sends raw quotas only: shape them minimally rather than
+    // leave the block empty.
+    return (c.quotas || []).map(function (q) {
+      return { label: q.label, short: q.id, pct: q.pct, resetAt: q.resetAt, color: q.color,
+               level: q.level || (q.pct >= 90 ? 'crit' : (q.pct >= 70 ? 'warn' : 'ok')) };
+    });
+  }
+  function renderCodex(c) {
+    var box = document.getElementById('codex-rows');
+    if (!box) return;
+    if (!c || !c.providers || c.providers.indexOf('codex') < 0) {
+      if (cstruct) { box.innerHTML = ''; cstruct = ''; crefs = null; }
+      return;
+    }
+    var rows = codexRowsOf(c);
+    var err = c.error || c.setupError || '';
+    var loading = c.busy || !c.updated;
+    var k = rows.length ? 'q:' : 'q0:' + (err ? 1 : 0) + (loading ? 'l' : 'e') + ':';
+    for (var i = 0; i < rows.length; i++) k += rows[i].short + '=' + rows[i].label + '=' + (rows[i].title || '') + ',';
+    if (k !== cstruct) {
+      cstruct = k;
+      box.innerHTML = rows.length
+        ? rowsHtml(rows) + '<div class="warnmsg" hidden></div><div class="at"></div>'
+        : (err || loading ? skeleton() : '') +
+          (err ? '<div class="warnmsg"></div>'
+               : '<div class="hint">' + esc(loading ? T.loading : T.codexEmpty) + '</div>');
+      crefs = rowRefs(box);
+      crefs.err = box.querySelector('.warnmsg');
+      crefs.at = box.querySelector('.at');
+    }
+    if (rows.length) paintRows(crefs, rows);
+    if (crefs.err) {
+      crefs.err.hidden = !err;
+      if (err) setText(crefs.err, '⚠ ' + err);
+    }
+    if (crefs.at) setText(crefs.at, footText(c));
   }
 
   function htmlSecrets(v) {
@@ -2079,40 +2733,96 @@ function getHtml(T) {
            esc(v.needsUpdate ? T.updateConn : T.connect) +
            '</button></div>';
     }
-    if (!v.secrets.length) {
+    // Automatic MCP access is a choice worth seeing while it is on: one quiet
+    // line, a click away from the setting that turns it off.
+    if (v.policy && v.policy.auto) {
+      h += '<div class="aiauto" data-act="settings">' + esc(T.aiAuto) + '</div>';
+    }
+    var items = v.layout || [];
+    if (!v.secrets.length && !items.length) {
       return h + '<div class="empty">' + esc(T.noKeys) + '<br>' + esc(T.noKeysHint) + '</div>';
     }
+    var pend = {}, pl = v.pending || [];
+    for (var p = 0; p < pl.length; p++) pend[pl[p]] = 1;
 
-    for (var k = 0; k < v.secrets.length; k++) {
-      var s = v.secrets[k];
-      // Left click AND right click open OUR action menu (a translated quick
-      // pick), not the native VS Code context menu: that one is resolved from
-      // package.nls by VS Code's own display language, so it ignored the panel's
-      // language setting and always showed English. Ours follows the setting.
-      h += '<button class="key" data-act="actions" data-name="' + esc(s.name) + '" title="' +
+    // No layout yet: today's flat list.
+    if (!items.length) {
+      for (var k = 0; k < v.secrets.length; k++) h += keyHtml(v.secrets[k], pend);
+      return h;
+    }
+
+    // The layout in order: groups with their keys, separators where they were
+    // put, then the ungrouped keys. v.secrets is already sorted the same way,
+    // so the .key elements come out in exactly the array's order. Headers and
+    // separators never carry class key, kmeta or data-name.
+    var known = {}, hasGroup = false;
+    for (var i2 = 0; i2 < items.length; i2++) {
+      if (items[i2] && items[i2].type === 'group') { known[items[i2].id] = 1; hasGroup = true; }
+    }
+    var byGroup = {};
+    for (var j = 0; j < v.secrets.length; j++) {
+      var gid = v.secrets[j].groupId && known[v.secrets[j].groupId] ? v.secrets[j].groupId : '';
+      (byGroup[gid] = byGroup[gid] || []).push(v.secrets[j]);
+    }
+    for (var a = 0; a < items.length; a++) {
+      var it = items[a];
+      if (!it) continue;
+      if (it.type === 'separator') {
+        h += '<div class="lsep" data-item="' + esc(it.id) + '" draggable="true" tabindex="0" role="separator"' +
+             ' title="' + esc(it.label || T.separator) + '">' +
+             (it.label ? '<span>' + esc(it.label) + '</span>' : '') + '</div>';
+        continue;
+      }
+      if (it.type !== 'group') continue;
+      var ks = byGroup[it.id] || [];
+      h += '<div class="ghead" data-gid="' + esc(it.id) + '" data-item="' + esc(it.id) +
+           '" draggable="true" tabindex="0" role="button" aria-expanded="true">' +
+           '<span class="gtw">›</span><span class="gname">' + esc(it.name) + '</span>' +
+           '<span class="gmcp" hidden></span><span class="gcnt"></span><i class="gdot" hidden></i></div>';
+      if (!ks.length) h += '<div class="gempty" data-gid="' + esc(it.id) + '">' + esc(T.groupEmpty) + '</div>';
+      for (var b = 0; b < ks.length; b++) h += keyHtml(ks[b], pend);
+    }
+    var loose = byGroup[''] || [];
+    // Not a layout item: not foldable, not movable, but a drop target that
+    // takes a key out of its group.
+    if (hasGroup) {
+      h += '<div class="ghead gnone"><span class="gtw"></span><span class="gname">' + esc(T.ungrouped) +
+           '</span><span class="gcnt"></span></div>';
+    }
+    for (var c = 0; c < loose.length; c++) h += keyHtml(loose[c], pend);
+    return h;
+  }
+
+  function keyHtml(s, pend) {
+    // Left click AND right click open OUR action menu (a translated quick
+    // pick), not the native VS Code context menu: that one is resolved from
+    // package.nls by VS Code's own display language, so it ignored the panel's
+    // language setting and always showed English. Ours follows the setting.
+    var h = '<button class="key" data-act="actions" data-name="' + esc(s.name) + '"' +
+           (s.groupId ? ' data-gid="' + esc(s.groupId) + '"' : '') + ' draggable="true" title="' +
              esc(s.kind + ' · ' + s.hint + ' · ' + fmt(T.chars, s.length) +
-                 ' · ' + T.rowHint) + '">' +
+                 (s.group ? ' · ' + s.group : '') + ' · ' + T.rowHint) + '">' +
            '<div class="kname"><span>' + esc(s.name) + '</span>' +
              (staleOf(s) ? '<em class="old" title="' + esc(staleOf(s)) + '">•</em>' : '') +
+             (pend && pend[s.name] ? '<em class="tag req" title="' + esc(T.tagRequest) + '">req</em>' : '') +
              (s.pub ? '<em class="tag pub" title="' + esc(T.tagPublic) + '">pub</em>' : '') +
              (s.confirm ? '<em class="tag ask" title="' + esc(T.tagConfirm) + '">ask</em>' : '') +
-             (s.mcp ? '<em class="tag">mcp</em>' : '') +
+             (s.mcp ? '<em class="tag"' + (s.mcpServers && s.mcpServers.length
+               ? ' title="' + esc(s.mcpServers.join(', ')) + '"' : '') + '>mcp</em>' : '') +
              '<span class="chev">›</span>' +
            '</div>' +
            '<div class="kmeta"></div>';
-      if (s.maxUses) {
-        // Finite in uses, not in time: discrete segments, not a continuous bar.
-        var n = Math.min(s.maxUses, 8);
-        h += '<div class="seg">';
-        for (var u = 0; u < n; u++) h += '<i></i>';
-        h += '</div>';
-      } else if (s.expiresAt) {
-        h += '<div class="bar"><div class="fill"></div></div>';
-      }
-      // With no expiry and no use counter: no bar at all. The absence is the signal.
-      h += '</button>';
+    if (s.maxUses) {
+      // Finite in uses, not in time: discrete segments, not a continuous bar.
+      var n = Math.min(s.maxUses, 8);
+      h += '<div class="seg">';
+      for (var u = 0; u < n; u++) h += '<i></i>';
+      h += '</div>';
+    } else if (s.expiresAt) {
+      h += '<div class="bar"><div class="fill"></div></div>';
     }
-    return h;
+    // With no expiry and no use counter: no bar at all. The absence is the signal.
+    return h + '</button>';
   }
 
   // The header is static: we only ever update the counter and the alert dot
@@ -2217,10 +2927,7 @@ function getHtml(T) {
 
     refs = {
       vide: !d || !d.rows.length,
-      pct: q.querySelectorAll('.pct'),
-      bar: q.querySelectorAll('.bar'),
-      fill: q.querySelectorAll('.fill'),
-      eta: q.querySelectorAll('.eta'),
+      rows: rowRefs(q),
       err: q.querySelector('.warnmsg'),
       pause: q.querySelector('.pausemsg'),
       cred: q.querySelector('#cred'),
@@ -2239,36 +2946,24 @@ function getHtml(T) {
     if (!refs) return;
 
     if (!refs.vide && d && d.rows.length) {
-      for (var i = 0; i < d.rows.length; i++) {
-        var r = d.rows[i], p = Math.round(r.pct);
-        setText(refs.pct[i], p + '%');
-        setClass(refs.pct[i], 'pct ' + r.level);
-        setClass(refs.fill[i], 'fill ' + r.level);
-        var w = Math.min(r.pct, 100) + '%';
-        if (refs.fill[i].style.width !== w) refs.fill[i].style.width = w;
-        refs.bar[i].setAttribute('aria-valuenow', p);
-        setText(refs.eta[i], etaText(r.resetAt) +
-          (r.hitsAt ? ' · ' + fmt(T.hitsAt, clockOf(r.hitsAt)) : ''));
-      }
+      paintRows(refs.rows, d.rows);
       if (refs.err) {
         refs.err.hidden = !d.error;
         if (d.error) setText(refs.err, '⚠ ' + d.error);
       }
       updateCredits(d.credits);
       updatePause(d.pause);
-      if (refs.at) {
-        setText(refs.at, d.pause
-          ? fmt(T.updatedPaused, d.at)
-          : (d.next ? fmt(T.updatedNext, d.at, d.next) : fmt(T.updated, d.at)));
-      }
+      if (refs.at) setText(refs.at, footText(d));
     } else if (refs.err && d && d.error) {
       setText(refs.err, '⚠ ' + d.error);
     }
+    renderCodex(d && d.companion);
 
     if (d && d.vault) updateSecrets(d.vault);
     var stools = document.getElementById('stools');
     if (stools) stools.hidden = !(d && d.vault && d.vault.secrets && d.vault.secrets.length);
     applySearch();
+    fillGroups();
   }
 
   window.addEventListener('message', function (e) {
@@ -2288,6 +2983,13 @@ function getHtml(T) {
   function nextDelay() {
     var minute = 60000 - (Date.now() % 60000) + 200;
     if (!lastData) return minute;
+    // Same rule for a quota about to reset, Claude or ChatGPT alike: the
+    // countdown is the thing being watched at that moment.
+    var q = (lastData.rows || []).concat((lastData.companion && lastData.companion.rows) || []);
+    for (var k = 0; k < q.length; k++) {
+      var left = q[k].resetAt - Date.now();
+      if (left > 0 && left < 600000) return Math.min(minute, 10000);
+    }
     var v = lastData.vault || { secrets: [] };
     for (var i = 0; i < v.secrets.length; i++) {
       var l = lifeOf(v.secrets[i]);

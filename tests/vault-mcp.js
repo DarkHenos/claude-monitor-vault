@@ -58,5 +58,111 @@ function request(method, params = {}) {
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => {
   for (const p of pending.values()) clearTimeout(p.timer);
   child.stdin.end();
-  child.on('close', () => fs.rmSync(temp, { recursive: true, force: true }));
+  child.on('close', () => { fs.rmSync(temp, { recursive: true, force: true }); toolsOf12(); });
 });
+
+// 1.2: ChatGPT creates keys, changes MCP access and groups, reorganises the
+// layout. Against a stub core again (no real vault, no key store): the stub
+// records what the server asks of core, so the test checks the server's own
+// job: argument shapes, actor 'codex', 1-based positions, waiting for the
+// user's answer, and never echoing a value it produced.
+function toolsOf12() {
+  const { spawnSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-mcp12-test-'));
+  const value = 'produced-' + require('crypto').randomBytes(12).toString('hex');
+  const log = path.join(dir, 'calls.jsonl');
+  fs.copyFileSync(path.join(__dirname, '../vault/mcp-server.js'), path.join(dir, 'mcp-server.js'));
+  fs.writeFileSync(path.join(dir, 'core.js'), `
+const fs = require('fs');
+const LOG = ${JSON.stringify(log)};
+const rec = (fn, args) => fs.appendFileSync(LOG, JSON.stringify({ fn, args }) + '\\n');
+const G = { type: 'group', id: 'g1', name: 'Payments', collapsed: false };
+let polls = 0;
+const keys = [
+  { name: 'LOOSE', mcp: true, mcpServers: null, groupId: null, group: null, expired: false },
+  { name: 'STRIPE_KEY', mcp: true, mcpServers: ['claude-monitor-vault'], groupId: 'g1', group: 'Payments', expired: false },
+  { name: 'HIDDEN', mcp: false, groupId: null, group: null, expired: false }
+];
+const layoutFn = name => (...args) => { rec(name, args); return { name: String(args[0]), index: args[1] }; };
+module.exports = {
+  listFast: () => keys,
+  mcpAllows: (s, server) => !!s.mcp && (!s.mcpServers || s.mcpServers.includes(server)),
+  validateName: n => String(n).toUpperCase(),
+  parseServerList: l => { const a = (Array.isArray(l) ? l : String(l).split(',')).map(x => String(x).trim()).filter(Boolean); if (!a.length) throw new Error('name at least one server'); return a; },
+  layout: () => [G, { type: 'separator', id: 's1', label: 'Prod' }],
+  rotationOf: () => null,
+  policyFast: () => ({ mcpByAI: 'ask', layoutByAI: true }),
+  aiCreateKey: o => { rec('aiCreateKey', [o]); return { name: o.name, kind: 'generic', length: o.value.length, group: o.group || null, groupCreated: !!o.group, mcp: o.mcp && o.mcp.allow ? { status: 'requested', servers: o.mcp.servers, why: 'every server', request: { rid: 'r-create', names: [o.name] } } : { status: 'none' } }; },
+  aiChangeMcp: o => { rec('aiChangeMcp', [o]); return o.allow ? { status: 'requested', why: 'widening', request: { rid: 'r-set', names: o.names } } : { status: 'applied', why: 'removal', keys: o.names.map(n => ({ name: n, mcp: false })) }; },
+  mcpRequestState: rid => { rec('mcpRequestState', [rid]); return ++polls % 2 === 0 ? 'approved' : 'pending'; },
+  setKeyGroup: (names, g, by, opts) => { rec('setKeyGroup', [names, g, by, opts]); return { group: g, names }; },
+  createGroup: layoutFn('createGroup'), renameGroup: layoutFn('renameGroup'), deleteGroup: layoutFn('deleteGroup'),
+  addSeparator: layoutFn('addSeparator'), editSeparator: layoutFn('editSeparator'), removeSeparator: layoutFn('removeSeparator'),
+  moveItem: layoutFn('moveItem')
+};`);
+  const calls = [
+    ['tools/list'],
+    ['tools/call', { name: 'vault_list' }],
+    ['tools/call', { name: 'vault_create', arguments: { name: 'new_key', note: 'made by a program', program: process.execPath,
+      args: ['-e', 'process.stdout.write(' + JSON.stringify(value) + ' + "\\n")'], mcp: 'all', reason: 'needs it', group: 'Payments' } }],
+    ['tools/call', { name: 'vault_create', arguments: { name: 'EMPTY_LIST', note: 'x', program: process.execPath, args: ['-e', '1'], mcp: [] } }],
+    ['tools/call', { name: 'vault_set', arguments: { names: ['STRIPE_KEY'], mcp: ['other'] } }],
+    ['tools/call', { name: 'vault_set', arguments: { names: ['STRIPE_KEY'], mcp: ['other'], reason: 'the other tool needs it', group: null } }],
+    ['tools/call', { name: 'vault_set', arguments: { names: ['LOOSE'], mcp: 'none' } }],
+    ['tools/call', { name: 'vault_layout', arguments: { op: 'createGroup', name: 'Mail', position: 2 } }],
+    ['tools/call', { name: 'vault_layout', arguments: { op: 'move', name: 'Mail' } }],
+    ['tools/call', { name: 'vault_layout', arguments: { op: 'move', name: 'Mail', position: 0 } }],
+    ['tools/call', { name: 'vault_layout', arguments: { op: 'editSeparator', id: 's1', label: 'Production' } }]
+  ];
+  try {
+    const input = calls.map((c, i) => JSON.stringify({ jsonrpc: '2.0', id: i + 1, method: c[0], params: c[1] || {} })).join('\n') + '\n';
+    const r = spawnSync(process.execPath, [path.join(dir, 'mcp-server.js'), '--root', dir], { input, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!r.stdout.includes(value), 'A produced value entered the MCP response');
+    const res = r.stdout.trim().split(/\r?\n/).map(l => JSON.parse(l));
+    const text = i => res[i].result.content[0].text;
+    const calls12 = fs.readFileSync(log, 'utf8').trim().split(/\r?\n/).map(l => JSON.parse(l));
+    const of = fn => calls12.filter(x => x.fn === fn).map(x => x.args);
+    assert.deepEqual(res[0].result.tools.map(t => t.name), ['vault_list', 'vault_run', 'vault_create', 'vault_set', 'vault_layout']);
+    console.log('PASS 1.2 tools offered when core has them');
+    const list = JSON.parse(text(1));
+    assert.deepEqual(list.layout, [{ type: 'group', name: 'Payments' }, { type: 'separator', label: 'Prod' }]);
+    assert.deepEqual(list.keys.map(k => k.name), ['STRIPE_KEY', 'LOOSE'], 'grouped keys first, hidden key filtered');
+    assert.equal(list.keys[0].group, 'Payments');
+    assert.deepEqual(list.keys[0].scope, ['claude-monitor-vault']);
+    assert.equal(list.keys[1].scope, 'all');
+    console.log('PASS vault_list returns layout order, groups and MCP scope');
+    const created = of('aiCreateKey')[0][0];
+    assert.equal(created.value, value, 'one trailing newline stripped');
+    assert.equal(created.by, 'codex');
+    assert.equal(created.name, 'NEW_KEY');
+    assert.equal(created.group, 'Payments');
+    assert.deepEqual(created.mcp, { allow: true, servers: null });
+    assert.ok(/added by ChatGPT/.test(created.note));
+    const out = JSON.parse(text(2));
+    assert.equal(out.mcp.status, 'requested');
+    assert.equal(out.mcp.answer, 'approved');
+    assert.equal(res[3].result.isError, true);
+    assert.ok(/at least one server/.test(text(3)));
+    assert.equal(of('aiCreateKey').length, 1, 'an empty server list runs nothing');
+    console.log('PASS vault_create stores the program output, never returns it, waits for the answer');
+    assert.equal(res[4].result.isError, true);
+    assert.ok(/reason is required/.test(text(4)));
+    const change = of('aiChangeMcp');
+    assert.deepEqual(change[0][0].servers, ['other']);
+    assert.equal(change[0][0].by, 'codex');
+    assert.equal(change[0][0].reason, 'the other tool needs it');
+    assert.deepEqual(of('setKeyGroup')[0], [['STRIPE_KEY'], null, 'codex', { create: true }]);
+    assert.equal(JSON.parse(text(5)).mcp.answer, 'approved');
+    assert.equal(change[1][0].allow, false);
+    assert.equal(JSON.parse(text(6)).mcp.status, 'applied');
+    console.log('PASS vault_set: reason required to grant, removal applies, placement, actor codex');
+    assert.deepEqual(of('createGroup')[0], ['Mail', 1, 'codex'], 'position 2 is index 1');
+    assert.equal(res[8].result.isError, true);
+    assert.equal(res[9].result.isError, true);
+    assert.equal(of('moveItem').length, 0, 'an invalid move reaches nothing');
+    assert.deepEqual(of('editSeparator')[0], ['s1', 'Production', 'codex']);
+    console.log('PASS vault_layout: 1-based positions, required position for move, separator by id');
+  } catch (e) { console.error(e); process.exitCode = 1; }
+  finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}

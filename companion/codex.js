@@ -112,6 +112,8 @@ function quotaRows(data) {
       if (!w || typeof w.usedPercent !== 'number' || !Number.isFinite(w.usedPercent)) continue;
       rows.push({ id: (bucket.limitId || 'codex') + ':' + slot,
         label: bucket.limitName || bucket.limitId || 'Codex',
+        // Shown as the row tooltip, next to the limit name, when Codex sends it.
+        plan: typeof bucket.planType === 'string' ? bucket.planType : null,
         minutes: w.windowDurationMins, pct: Math.max(0, Math.min(100, w.usedPercent)),
         resetAt: Number.isFinite(w.resetsAt) ? w.resetsAt * 1000 : null });
     }

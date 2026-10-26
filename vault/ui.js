@@ -33,6 +33,26 @@ function kindText(kind) {
   return i18n.t(vault.kindSource(kind));
 }
 
+// The core and this file are released together, but a test stub or a half
+// updated bridge can hand us an older core. Every new capability is looked up
+// before use, so a missing function means a missing feature, never a crash.
+function has(fn) {
+  return typeof vault[fn] === 'function';
+}
+
+// Same rule as core.js normalizeGroupName, used only when the core does not
+// carry it: what the box shows live must be what will actually be stored.
+function normGroup(raw) {
+  if (has('normalizeGroupName')) return vault.normalizeGroupName(raw);
+  const s = String(raw == null ? '' : raw).trim().replace(/\s+/g, ' ')
+    .replace(/[^\p{L}\p{N} ._&+-]/gu, '').slice(0, 40).trim();
+  return s || null;
+}
+
+function aiName(by) {
+  return by === 'codex' ? 'ChatGPT' : 'Claude';
+}
+
 function issuesText(issues) {
   return (issues || []).map(i => ({
     level: i.level,
@@ -89,12 +109,67 @@ function activateVault(context, version, onChange) {
     return null;
   }
 
+  function showErr(e) {
+    vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e)));
+  }
+
+  // The layout is display only, kept beside the vault: groups and separators in
+  // the order the user (or the AI) put them. Empty when none exists yet, which
+  // the panel reads as "today's flat list".
+  function layoutItems() {
+    try { return has('layout') ? (vault.layout() || []) : []; } catch (e) { return []; }
+  }
+  function groupsOf() { return layoutItems().filter(i => i && i.type === 'group'); }
+  function itemById(id) { return layoutItems().find(i => i && i.id === id) || null; }
+  function groupById(id) {
+    const g = itemById(id);
+    return g && g.type === 'group' ? g : null;
+  }
+
+  // What the panel needs to know about the AI settings, for display only. The
+  // verified read is preferred because it carries the per-assistant overrides;
+  // the unverified one is the fallback when the master key is out of reach.
+  function displayPolicy() {
+    let p = { mcpByAI: 'ask', layoutByAI: true };
+    try {
+      if (has('policy')) Object.assign(p, vault.policy());
+      else if (has('policyFast')) Object.assign(p, vault.policyFast());
+    } catch (e) {
+      try { if (has('policyFast')) Object.assign(p, vault.policyFast()); } catch (e2) { /* defaults */ }
+    }
+    const per = p.perAI || {};
+    const auto = p.mcpByAI === 'auto' ||
+      ['claude', 'codex'].some(a => per[a] && per[a].mcpByAI === 'auto');
+    return { mcpByAI: p.mcpByAI || 'ask', layoutByAI: p.layoutByAI !== false, auto };
+  }
+
+  // Names that have an MCP request waiting for the user. Filled by reviewMcp(),
+  // which reads the requests anyway: reading them again on every refresh would
+  // cost a MAC check per redraw for no new information.
+  let pendingNames = [];
+
   // Data sent to the webview. No values, only metadata.
   function snapshot() {
     const health = vault.healthCheck();
     const st = installer.status(version);
+    const items = layoutItems();
+    const groupName = {};
+    for (const it of items) if (it && it.type === 'group') groupName[it.id] = it.name;
     return {
-      secrets: vault.listFast().map(s => Object.assign({}, s, { kind: kindText(s.kind) })),
+      // Resolved here as well as in the core: a key pointing at a deleted group
+      // counts as ungrouped, and the panel must never show the ghost of a name.
+      secrets: vault.listFast().map(s => {
+        const gid = s.groupId && groupName[s.groupId] ? s.groupId : null;
+        return Object.assign({}, s, {
+          kind: kindText(s.kind),
+          groupId: gid,
+          group: gid ? groupName[gid] : null,
+          mcpServers: s.mcpServers || null
+        });
+      }),
+      layout: items,
+      pending: pendingNames.slice(),
+      policy: displayPolicy(),
       issues: issuesText(health.issues),
       connected: st.installed && st.upToDate,
       needsUpdate: st.installed && !st.upToDate,
@@ -112,27 +187,46 @@ function activateVault(context, version, onChange) {
   async function reviewPending() {
     let waiting;
     try { waiting = vault.pendingReplacements(); } catch (e) { return; }
-    const live = new Set(waiting.map(p => p.name));
+    // Keyed by name AND request time: a new request for the same key, made
+    // after the first was answered, is a different question and gets asked.
+    const keyOf = p => p.name + '@' + (p.at || '');
+    const live = new Set(waiting.map(keyOf));
     for (const n of Array.from(asked)) if (!live.has(n)) asked.delete(n);
 
     const replace = t('Replace');
+    const replaceNoMcp = t('Replace without MCP access');
     const keep = t('Keep the current value');
     for (const p of waiting) {
-      if (asked.has(p.name)) continue;
-      asked.add(p.name);
+      if (asked.has(keyOf(p))) continue;
+      asked.add(keyOf(p));
+      // The new value inherits the key's MCP access. Said before the user
+      // decides, with a way to take the value but not the access.
+      const buttons = p.mcp ? [replace, replaceNoMcp, keep] : [replace, keep];
       const yes = await vscode.window.showWarningMessage(
         t('Claude asks to replace {0} in Claude Vault.', p.name),
         {
           modal: true,
           detail: t('New value: {0}, {1} characters.', kindText(p.kind), String(p.length)) +
             (p.note ? '\n\n' + t('Claude says: {0}', p.note) : '') +
+            (p.mcp ? '\n\n' + t('This key is allowed for MCP ({0}); the new value inherits it.',
+              p.mcpServers && p.mcpServers.length ? p.mcpServers.join(', ') : t('every server')) : '') +
             '\n\n' + t('The current value is destroyed and cannot be recovered. Neither you nor Claude has seen either value, only their size and type.')
         },
-        replace, keep);
+        ...buttons);
       try {
-        if (yes === replace) {
-          vault.approveReplace(p.name);
-          vscode.window.setStatusBarMessage(t('{0} replaced', p.name), 4000);
+        if (yes === replace || yes === replaceNoMcp) {
+          // The request time travels with the answer: if the request was
+          // replaced while the dialog was open, the core refuses rather than
+          // apply a value the user never saw described.
+          const res = vault.approveReplace(p.name, p.at, yes === replaceNoMcp ? { dropMcp: true } : undefined) || {};
+          if (res.mcpDropped && res.sameValueAs && yes !== replaceNoMcp) {
+            // Not what the user chose, so not left to a status bar line.
+            vscode.window.showWarningMessage(
+              t('{0} replaced; MCP access removed because the same value is stored as {1}', p.name, res.sameValueAs));
+          } else {
+            vscode.window.setStatusBarMessage(res.mcpDropped
+              ? t('{0} replaced without MCP access', p.name) : t('{0} replaced', p.name), 4000);
+          }
         } else {
           vault.rejectReplace(p.name);
         }
@@ -141,6 +235,189 @@ function activateVault(context, version, onChange) {
         vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e)));
       }
     }
+  }
+
+  // ---------------------------------------------- MCP access asked by the AI
+  //
+  // Claude (set.js) or ChatGPT (vault_set) asks for MCP access it may not grant
+  // itself under the current setting. One window, with everything needed to
+  // decide: who asks, which keys, which servers, and the reason it gave. The
+  // window applies exactly what it showed: the core compares what we hand back
+  // with the stored request, and refuses if anything moved in between.
+
+  const askedMcp = new Set();     // one window per request id
+
+  function serverLine(r) {
+    if (!r.servers) return t('Servers: every MCP server, including any added later');
+    const info = r.srvInfo || {};
+    return t('Servers: {0}', r.servers.map(id => {
+      const s = info[id];
+      if (s && (s.transport === 'http' || s.transport === 'sse')) return id + ' (' + t('remote') + ')';
+      if (s && s.transport === 'stdio' && !s.wrapped) return id + ' (' + t('not wrapped') + ')';
+      return id;
+    }).join(', '));
+  }
+
+  function keyLines(r) {
+    const facts = r.keys || r.facts || [];
+    if (!facts.length) return (r.names || []).map(n => '  ' + n).join('\n');
+    return facts.map(k => {
+      const bits = [];
+      if (k.kind) bits.push(kindText(k.kind));
+      if (k.group) bits.push(t('group {0}', k.group));
+      if (k.createdBy === 'claude' || k.createdBy === 'codex') bits.push(t('created by {0}', aiName(k.createdBy)));
+      if (k.confirm) bits.push(t('asks before every use'));
+      if (k.mcp) bits.push(k.mcpServers && k.mcpServers.length
+        ? t('MCP today: {0}', k.mcpServers.join(', ')) : t('MCP today: every server'));
+      return '  ' + k.name + (bits.length ? '  (' + bits.join(', ') + ')' : '');
+    }).join('\n');
+  }
+
+  // The ids the core accepts (parseServerList). A configured server whose id
+  // falls outside them could be picked here and then refused by the core, so
+  // it is never offered.
+  const SERVER_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+  async function chooseServers(r) {
+    let names = [];
+    try { names = installer.serverNames().filter(n => SERVER_ID_RE.test(n)); } catch (e) { /* no config yet */ }
+    for (const id of Object.keys(r.srvInfo || {})) if (names.indexOf(id) === -1) names.push(id);
+    for (const id of (r.servers || [])) if (names.indexOf(id) === -1) names.push(id);
+    if (!names.length) return undefined;
+    const picked = await vscode.window.showQuickPick(
+      names.map(n => ({ label: n, picked: !r.servers || r.servers.indexOf(n) !== -1 })),
+      { title: t('Servers allowed for {0}', (r.names || []).join(', ')), canPickMany: true,
+        placeHolder: t('The keys are refused everywhere else.') });
+    // An empty pick would read as "every server" once stored: the opposite
+    // of what someone narrowing the list is asking for.
+    if (!picked || !picked.length) return undefined;
+    return picked.map(p => p.label);
+  }
+
+  async function reviewMcp() {
+    if (!has('pendingMcp')) return;
+    let waiting;
+    try { waiting = vault.pendingMcp() || []; } catch (e) { return; }
+    const names = [];
+    for (const r of waiting) for (const n of (r.names || [])) if (names.indexOf(n) === -1) names.push(n);
+    if (names.join('|') !== pendingNames.join('|')) { pendingNames = names; notify(); }
+    const live = new Set(waiting.map(r => r.rid));
+    for (const id of Array.from(askedMcp)) if (!live.has(id)) askedMcp.delete(id);
+
+    for (const r of waiting) {
+      if (!r || !r.rid || askedMcp.has(r.rid)) continue;
+      askedMcp.add(r.rid);
+      const who = aiName(r.by);
+      const allow = t('Allow');
+      const choose = t('Choose servers');
+      const refuse = t('Refuse');
+      for (;;) {
+        const answer = await vscode.window.showWarningMessage(
+          t('{0} asks for MCP access to {1} key(s).', who, String((r.names || []).length)),
+          { modal: true,
+            detail: keyLines(r) + '\n\n' + serverLine(r) +
+              (r.reason ? '\n\n' + t('{0} says: {1}', who, r.reason) : '') +
+              '\n\n' + t('In an MCP call the value is placed in the tool arguments and sent to that server. Allow applies exactly what is listed here; closing this window refuses.') },
+          allow, choose, refuse);
+        try {
+          if (answer === allow) {
+            vault.approveMcp(r.rid, { names: (r.names || []).slice(), servers: r.servers || null, chosen: false });
+          } else if (answer === choose) {
+            const servers = await chooseServers(r);
+            if (servers === undefined) continue;      // back to the question, nothing decided
+            vault.approveMcp(r.rid, { names: (r.names || []).slice(), servers, chosen: true });
+          } else {
+            vault.rejectMcp(r.rid);
+            vscode.window.setStatusBarMessage(t('MCP request from {0} refused', who), 4000);
+            break;
+          }
+          try { installer.wrapMcpServers(); } catch (e) { /* the manual snippet remains */ }
+          vscode.window.setStatusBarMessage(t('MCP access granted to {0} key(s)', String((r.names || []).length)), 4000);
+        } catch (e) {
+          // A request that cannot be approved is answered as refused: this
+          // window will not come back for it, and left pending it would hold
+          // the one request slot for fifteen minutes while the AI waits on
+          // "pending". Refused, the AI files a fresh one, shown with fresh data.
+          // (The core already does this when the request changed.)
+          try { vault.rejectMcp(r.rid); } catch (e2) { /* already answered */ }
+          showErr(e);
+        }
+        break;
+      }
+      notify();
+    }
+  }
+
+  // A reorganisation by the AI must never be silent: the user sees it pass in
+  // the status bar, in one line, the moment the vault reports it.
+  const AI_EVENTS = new Set(['group', 'group-create', 'group-rename', 'group-delete',
+    'separator-add', 'separator-edit', 'separator-remove', 'layout-move', 'mcp']);
+  let aiSeenAt = Date.now();
+
+  function noticeAiChanges() {
+    let log;
+    try { log = vault.auditLog(60) || []; } catch (e) { return; }
+    const since = aiSeenAt;
+    for (const e of log) if (e && typeof e.at === 'number' && e.at > aiSeenAt) aiSeenAt = e.at;
+    // A grant the user approved in the request window is journaled under the
+    // assistant that asked, right after the user's own "mcp-approved" line. It
+    // is the user's decision, not something the AI did on its own, so it is
+    // left out. Matched by key name and time: the grant lines follow the
+    // approval within the same save, stamped by separate clock reads, so
+    // within two seconds after it. An approval only ever grants, so a removal
+    // is always the AI's own.
+    const approved = log.filter(e => e && e.event === 'mcp-approved' && e.name);
+    const userGranted = e => e.event === 'mcp' && e.detail !== 'removed' && approved.some(a => {
+      const dt = (e.at || 0) - (a.at || 0);
+      return String(a.name).split(',').indexOf(e.name) !== -1 && dt >= 0 && dt <= 2000;
+    });
+    const fresh = log.filter(e => e && e.at > since && AI_EVENTS.has(e.event) &&
+      (e.by === 'claude' || e.by === 'codex') && !userGranted(e));
+    if (!fresh.length) return;
+    const parts = [];
+    for (const by of ['claude', 'codex']) {
+      const mine = fresh.filter(e => e.by === by);
+      if (!mine.length) continue;
+      const who = aiName(by);
+      const moves = {};
+      let mcp = 0, other = 0;
+      for (const e of mine) {
+        if (e.event === 'group') { const g = e.detail || 'none'; moves[g] = (moves[g] || 0) + 1; }
+        else if (e.event === 'mcp') mcp++;
+        else other++;
+      }
+      for (const g of Object.keys(moves)) {
+        parts.push(g === 'none'
+          ? t('{0} took {1} key(s) out of their group', who, String(moves[g]))
+          : t('{0} moved {1} key(s) to {2}', who, String(moves[g]), g));
+      }
+      if (mcp) parts.push(t('{0} changed MCP access on {1} key(s)', who, String(mcp)));
+      if (other) parts.push(t('{0} reorganised your groups', who));
+    }
+    vscode.window.setStatusBarMessage('$(info) ' + parts.join(' · '), 8000);
+  }
+
+  // 1.1 kept "replace keys without asking" in an unsigned file, which 1.2 no
+  // longer believes: the setting is off since the update, without a word. It
+  // is not signed again on our own, since an unsigned file is something anyone
+  // could have written; the user is asked once, and either answer signs the
+  // file, so the question does not come back. Dismissed, it is asked again at
+  // the next start, and stays off meanwhile.
+  async function askLegacyAutoApprove() {
+    if (!has('legacyAutoApprove')) return;
+    let legacy = false;
+    try { legacy = vault.legacyAutoApprove(); } catch (e) { return; }
+    if (!legacy) return;
+    const keep = t('Keep it on');
+    const off = t('Turn it off');
+    const pick = await vscode.window.showWarningMessage(
+      t('Automatic replacement approval was on before the update: Claude replaced keys without asking you. Until you answer, it asks again before every replacement. Keep it?'),
+      keep, off);
+    if (pick !== keep && pick !== off) return;
+    try {
+      vault.setPolicy(pick === keep ? { autoApprove: true } : {});
+      notify();
+    } catch (e) { showErr(e); }
   }
 
   async function toggleAutoApprove() {
@@ -241,12 +518,13 @@ function activateVault(context, version, onChange) {
       t('Type: {0}, {1} characters', kindText(s.kind), String(s.length)),
       t('Marker: {0}', marker),
       t('Created: {0}', when(s.createdAt)),
-      t('Created by: {0}', s.createdBy === 'claude' ? 'Claude'
+      t('Created by: {0}', s.createdBy === 'claude' || s.createdBy === 'codex' ? aiName(s.createdBy)
         : s.createdBy === 'user' ? t('you') : t('unknown')),
       t('Last used: {0} ({1} time(s))', when(s.lastUsedAt), String(s.uses)),
       t('Expiry: {0}', s.maxUses ? t('{0} uses left', String(Math.max(0, s.maxUses - s.uses)))
         : s.expiresAt ? when(s.expiresAt) : t('none')),
-      t('MCP tools: {0}', s.mcp ? t('allowed') : t('not allowed'))
+      t('MCP tools: {0}', s.mcp ? t('allowed') : t('not allowed')),
+      t('Group: {0}', groupOfKey(s) || t('none'))
     ];
     const codexAccess = vscode.workspace.getConfiguration('agentBridge').get('codexVaultAccess', 'claude');
     const codexAllowed = !s.expired && vault.mcpAllows(codexAccess === 'claude' ? { ...s, mcp: true } : s, 'claude-monitor-vault');
@@ -353,12 +631,26 @@ function activateVault(context, version, onChange) {
       const n = vault.validateName(String(m && m.name || '').toUpperCase());
       const value = String(m && m.value || '');
       if (!value) throw new Error(t('Empty value'));
-      const r = vault.put(n, value, {
+      // Left undefined when the form says nothing: put() then keeps the group
+      // of a key it replaces instead of quietly ungrouping it.
+      let groupId;
+      if (m.groupId) {
+        if (!groupById(String(m.groupId))) throw new Error(t('That group no longer exists.'));
+        groupId = String(m.groupId);
+      } else if (m.groupName) {
+        const gname = normGroup(m.groupName);
+        if (!gname) throw new Error(t('Give the group a name.'));
+        const found = groupsOf().find(g => g.name.toLowerCase() === gname.toLowerCase());
+        groupId = found ? found.id : vault.createGroup(gname, undefined, 'user').id;
+      }
+      const opts = {
         expiresAt: m.burn ? null : (Number(m.ttlMs) > 0 ? Date.now() + Number(m.ttlMs) : null),
         maxUses: m.burn ? 1 : null,
         mcp: !!m.mcp,
         by: 'user'
-      });
+      };
+      if (groupId !== undefined) { opts.groupId = groupId; opts.groupBy = 'user'; }
+      const r = vault.put(n, value, opts);
       notify();
       vscode.window.setStatusBarMessage(
         t('{0}, {1}. Write ${2} in Claude to use it.',
@@ -391,6 +683,8 @@ function activateVault(context, version, onChange) {
       { label: (s.mcp ? '$(circle-slash) ' + t('Remove MCP authorisation')
                       : '$(plug) ' + t('Allow for MCP')),
         description: s.mcp ? t('currently allowed') : t('denied by default'), act: 'mcptoggle' },
+      { label: '$(folder) ' + t('Move to group'),
+        description: groupOfKey(s) || t('No group'), act: 'group' },
       { label: '$(eye) ' + t('Reveal'),
         description: t('copies the plain value to the clipboard'), act: 'reveal' },
       { label: '$(trash) ' + t('Delete'), description: t('irreversible'), act: 'del' }
@@ -403,6 +697,7 @@ function activateVault(context, version, onChange) {
     if (choice.act === 'mcp') return mcpSnippet(name);
     if (choice.act === 'ttl') return changeTtl(name);
     if (choice.act === 'mcptoggle') return toggleMcp(name);
+    if (choice.act === 'group') return setGroup(name);
     if (choice.act === 'reveal') return revealKey(name);
     if (choice.act === 'del') return deleteKey(name);
   }
@@ -413,10 +708,368 @@ function activateVault(context, version, onChange) {
       vscode.window.showInformationMessage(t('The vault is empty.'));
       return null;
     }
-    const pick = await vscode.window.showQuickPick(
-      secrets.map(s => ({ label: s.name, description: kindText(s.kind), name: s.name })),
+    const pick = await vscode.window.showQuickPick(keyPickItems(secrets),
       { title, matchOnDescription: true, placeHolder: t('Filter…') });
-    return pick ? pick.name : null;
+    return pick && pick.name ? pick.name : null;
+  }
+
+  // ------------------------------------------------------- groups and separators
+  //
+  // Display only: a group never changes what a key can do, only where it sits.
+  // Every change goes through the core, which writes it to the audit log with
+  // its author, so the panel, the bridge scripts and the MCP server all play by
+  // one set of rules.
+
+  function groupOfKey(s) {
+    const g = s && s.groupId ? groupById(s.groupId) : null;
+    return g ? g.name : null;
+  }
+
+  // Quick picks follow the panel: keys in layout order, under a separator per
+  // group, the group repeated as description so filtering by it works too.
+  // QuickPickItemKind is looked up, not assumed: older hosts and test doubles
+  // do not have it, and a flat list is a fine fallback.
+  function keyPickItems(list) {
+    const secrets = list || vault.listFast();
+    const groups = groupsOf();
+    const names = {};
+    for (const g of groups) names[g.id] = g.name;
+    const item = s => ({
+      label: s.name,
+      description: (s.groupId && names[s.groupId] ? names[s.groupId] + '  ·  ' : '') + kindText(s.kind),
+      name: s.name
+    });
+    if (!groups.length) return secrets.map(item);
+    const SEP = (vscode.QuickPickItemKind || {}).Separator;
+    const out = [];
+    const section = (label, keys) => {
+      if (!keys.length) return;
+      if (SEP !== undefined) out.push({ label, kind: SEP });
+      for (const s of keys) out.push(item(s));
+    };
+    for (const g of groups) section(g.name, secrets.filter(s => s.groupId === g.id));
+    section(t('Ungrouped'), secrets.filter(s => !s.groupId || !names[s.groupId]));
+    return out;
+  }
+
+  async function askGroupName(title, value, selfId) {
+    const taken = groupsOf().filter(g => g.id !== selfId).map(g => g.name.toLowerCase());
+    const raw = await vscode.window.showInputBox({
+      title,
+      value: value || '',
+      prompt: t('Letters, digits, spaces and . _ & + - only, 40 characters at most.'),
+      placeHolder: 'Scaleway',
+      validateInput: v => {
+        const n = normGroup(v);
+        if (!n) return t('A name is required.');
+        if (taken.indexOf(n.toLowerCase()) !== -1) return t('A group named {0} already exists.', n);
+        return n === String(v).trim() ? null : { message: t('Will be stored as {0}', n), severity: 1 };
+      }
+    });
+    if (raw === undefined) return null;
+    return normGroup(raw);
+  }
+
+  // `at` is only honoured when it is a number: a command run from a menu
+  // receives whatever object the menu passes.
+  async function newGroup(at) {
+    const name = await askGroupName(t('New group'));
+    if (!name) return null;
+    try {
+      const g = vault.createGroup(name, typeof at === 'number' ? at : undefined, 'user');
+      notify();
+      vscode.window.setStatusBarMessage(t('Group {0} created', g.name), 4000);
+      return g;
+    } catch (e) { showErr(e); return null; }
+  }
+
+  function separatorPrompt() {
+    return t('Optional title shown on the line. Leave it empty for a plain line.');
+  }
+
+  async function newSeparator() {
+    const label = await vscode.window.showInputBox({
+      title: t('New separator'), prompt: separatorPrompt(), placeHolder: t('Production')
+    });
+    if (label === undefined) return;
+    try { vault.addSeparator(label.trim() || null, undefined, 'user'); notify(); }
+    catch (e) { showErr(e); }
+  }
+
+  async function editSeparatorFlow(id) {
+    const it = itemById(id);
+    if (!it || it.type !== 'separator') return;
+    const label = await vscode.window.showInputBox({
+      title: t('Edit label'), prompt: separatorPrompt(), value: it.label || ''
+    });
+    if (label === undefined) return;
+    try { vault.editSeparator(id, label.trim() || null, 'user'); notify(); }
+    catch (e) { showErr(e); }
+  }
+
+  // Returns a group id, null for "no group", or undefined when the user backed out.
+  async function pickGroup(title, opts) {
+    const o = opts || {};
+    const items = groupsOf().filter(g => g.id !== o.current)
+      .map(g => ({ label: '$(folder) ' + g.name, id: g.id }));
+    items.push({ label: '$(add) ' + t('New group…'), create: true });
+    if (o.none) items.push({ label: '$(circle-slash) ' + t('No group'), none: true });
+    const pick = await vscode.window.showQuickPick(items, { title, placeHolder: t('Pick a group') });
+    if (!pick) return undefined;
+    if (pick.none) return null;
+    if (pick.create) { const g = await newGroup(); return g ? g.id : undefined; }
+    return pick.id;
+  }
+
+  function moveKey(name, gid) {
+    try {
+      const r = vault.setKeyGroup(name, gid || null, 'user');
+      notify();
+      const where = r && r.group ? r.group : null;
+      vscode.window.setStatusBarMessage(where
+        ? t('{0} moved to {1}', Array.isArray(name) ? t('{0} key(s)', String(name.length)) : name, where)
+        : t('{0}: no group now', Array.isArray(name) ? t('{0} key(s)', String(name.length)) : name), 4000);
+    } catch (e) { showErr(e); }
+  }
+
+  async function setGroup(arg) {
+    const name = nameOf(arg) || await pickKey(t('Move a key to a group'));
+    if (!name) return;
+    const s = vault.listFast().find(x => x.name === name);
+    if (!s) return;
+    const gid = await pickGroup(t('Move {0} to', name), { none: !!groupOfKey(s), current: s.groupId });
+    if (gid === undefined) return;
+    moveKey(name, gid);
+  }
+
+  async function organize() {
+    const all = vault.listFast();
+    if (!all.length) return vscode.window.showInformationMessage(t('The vault is empty.'));
+    const picks = await vscode.window.showQuickPick(keyPickItems(all), {
+      canPickMany: true, matchOnDescription: true,
+      title: t('Organize keys into a group'), placeHolder: t('Pick the keys to move together.')
+    });
+    const names = (picks || []).map(p => p.name).filter(Boolean);
+    if (!names.length) return;
+    const gid = await pickGroup(t('Move {0} key(s) to', String(names.length)), { none: true });
+    if (gid === undefined) return;
+    moveKey(names, gid);
+  }
+
+  // A group given by id (the panel), or picked from the list (the palette).
+  async function groupArg(arg, title) {
+    const id = typeof arg === 'string' ? arg : (arg && typeof arg.id === 'string' ? arg.id : null);
+    if (id) {
+      const g = groupById(id);
+      if (g) return g;
+    }
+    const groups = groupsOf();
+    if (!groups.length) {
+      vscode.window.showInformationMessage(t('No group yet. Create one with New group.'));
+      return null;
+    }
+    const secrets = vault.listFast();
+    const pick = await vscode.window.showQuickPick(groups.map(g => ({
+      label: '$(folder) ' + g.name, id: g.id,
+      description: t('{0} key(s)', String(secrets.filter(s => s.groupId === g.id).length))
+    })), { title, placeHolder: t('Pick a group') });
+    return pick ? groupById(pick.id) : null;
+  }
+
+  async function renameGroupFlow(arg) {
+    const g = await groupArg(arg, t('Rename a group'));
+    if (!g) return;
+    const name = await askGroupName(t('Rename {0}', g.name), g.name, g.id);
+    if (!name || name === g.name) return;
+    try { vault.renameGroup(g.id, name, 'user'); notify(); }
+    catch (e) { showErr(e); }
+  }
+
+  async function deleteGroupFlow(arg) {
+    const g = await groupArg(arg, t('Delete a group'));
+    if (!g) return;
+    const n = vault.listFast().filter(s => s.groupId === g.id).length;
+    const go = t('Delete group');
+    const yes = await vscode.window.showWarningMessage(
+      t('Delete the group {0}?', g.name),
+      { modal: true,
+        detail: n ? t('Its {0} key(s) stay in the vault, ungrouped. Nothing else about them changes.', String(n))
+                  : t('The group is empty.') },
+      go);
+    if (yes !== go) return;
+    try {
+      vault.deleteGroup(g.id, 'user');
+      notify();
+      vscode.window.setStatusBarMessage(t('Group {0} deleted, its keys kept', g.name), 4000);
+    } catch (e) { showErr(e); }
+  }
+
+  // Proposals only: nothing moves until the user ticks it and confirms.
+  async function suggestGroupsFlow() {
+    let sugg = [];
+    try { sugg = vault.suggestGroups() || []; } catch (e) { return showErr(e); }
+    if (!sugg.length) {
+      return vscode.window.showInformationMessage(
+        t('No suggestion: no two ungrouped keys share a prefix.'));
+    }
+    const picks = await vscode.window.showQuickPick(sugg.map(s => ({
+      label: '$(folder) ' + s.group,
+      description: s.names.join(', '),
+      detail: s.typo && s.typo.length ? t('Check the spelling: {0}', s.typo.join(', ')) : undefined,
+      picked: true,
+      sugg: s
+    })), { canPickMany: true, title: t('Suggested groups'),
+           placeHolder: t('Nothing is applied until you confirm. Untick what you do not want.') });
+    if (!picks || !picks.length) return;
+    let moved = 0;
+    for (const p of picks) {
+      try {
+        const existing = groupsOf().find(g => g.name.toLowerCase() === String(p.sugg.group).toLowerCase());
+        vault.setKeyGroup(p.sugg.names, existing ? existing.id : p.sugg.group, 'user', { create: true });
+        moved += p.sugg.names.length;
+      } catch (e) { showErr(e); }
+    }
+    notify();
+    if (moved) {
+      vscode.window.setStatusBarMessage(
+        t('{0} key(s) placed in {1} group(s)', String(moved), String(picks.length)), 5000);
+    }
+  }
+
+  function applyMcp(changes) {
+    if (has('setMcpMany')) return vault.setMcpMany(changes, 'user');
+    for (const c of changes) vault.setMcp(c.name, c.allowed, c.servers, 'user');
+  }
+
+  // One confirmation for the whole group, listing every key concerned. A grant
+  // only touches keys without MCP, so a key already scoped to one server keeps
+  // exactly that scope. Removal applies at once and can be undone.
+  async function groupMcp(arg, mode) {
+    const g = await groupArg(arg, t('MCP access for a group'));
+    if (!g) return;
+    const keys = vault.listFast().filter(s => s.groupId === g.id);
+    if (!keys.length) return vscode.window.showInformationMessage(t('The group {0} is empty.', g.name));
+    let m = mode;
+    if (m !== 'allow' && m !== 'remove') {
+      const pick = await vscode.window.showQuickPick([
+        { label: '$(plug) ' + t('Allow MCP for the group'), m: 'allow',
+          description: t('{0} key(s) without MCP', String(keys.filter(s => !s.mcp).length)) },
+        { label: '$(circle-slash) ' + t('Remove MCP for the group'), m: 'remove',
+          description: t('{0} key(s) allowed', String(keys.filter(s => s.mcp).length)) }
+      ], { title: g.name });
+      if (!pick) return;
+      m = pick.m;
+    }
+    if (m === 'allow') {
+      const target = keys.filter(s => !s.mcp && !s.expired);
+      if (!target.length) {
+        return vscode.window.showInformationMessage(t('Every key in {0} is already allowed for MCP.', g.name));
+      }
+      const allow = t('Allow for MCP');
+      const yes = await vscode.window.showWarningMessage(
+        t('Allow {0} key(s) of {1} in MCP tool calls?', String(target.length), g.name),
+        { modal: true,
+          detail: target.map(s => '  ' + s.name + (s.confirm ? '  (' + t('asks before every use') + ')' : '')).join('\n') +
+            '\n\n' + t('Keys already allowed keep their current servers. In an MCP call the value is placed in the tool arguments and sent to the MCP server: only grant this when those servers belong to the services these keys are meant for.') },
+        allow);
+      if (yes !== allow) return;
+      const scope = await pickMcpScope({ name: g.name, mcpServers: null });
+      if (scope === undefined) return;
+      try {
+        applyMcp(target.map(s => ({ name: s.name, allowed: true, servers: scope })));
+        try { installer.wrapMcpServers(); } catch (e) { /* the manual snippet remains */ }
+        notify();
+        vscode.window.showInformationMessage(
+          t('{0} key(s) of {1} allowed for MCP tools.', String(target.length), g.name));
+      } catch (e) { showErr(e); }
+      return;
+    }
+    const target = keys.filter(s => s.mcp);
+    if (!target.length) return vscode.window.showInformationMessage(t('No key in {0} is allowed for MCP.', g.name));
+    const before = target.map(s => ({ name: s.name, allowed: true,
+      servers: s.mcpServers ? s.mcpServers.slice() : [] }));
+    try {
+      applyMcp(target.map(s => ({ name: s.name, allowed: false, servers: null })));
+      notify();
+      const undo = t('Undo');
+      vscode.window.showInformationMessage(
+        t('MCP authorisation removed from {0} key(s) of {1}.', String(target.length), g.name), undo)
+        .then(a => {
+          if (a !== undo) return;
+          try { applyMcp(before); notify(); } catch (e) { showErr(e); }
+        });
+    } catch (e) { showErr(e); }
+  }
+
+  // --- what the panel sends. Never taken at its word: ids are looked up again
+  // here, so a stale or scripted message can at worst do nothing.
+
+  function groupToggle(id) {
+    const g = groupById(id);
+    if (!g) return;
+    try { vault.setCollapsed(g.id, !g.collapsed); notify(); } catch (e) { showErr(e); }
+  }
+
+  function collapseAll(on) {
+    try {
+      // One write for the whole layout when the core offers it.
+      if (has('setAllCollapsed')) vault.setAllCollapsed(!!on);
+      else for (const g of groupsOf()) if (!!g.collapsed !== !!on) vault.setCollapsed(g.id, !!on);
+      notify();
+    } catch (e) { showErr(e); }
+  }
+
+  function moveItemTo(id, toIndex) {
+    const items = layoutItems();
+    if (typeof id !== 'string' || !items.some(x => x.id === id)) return;
+    const n = Math.floor(Number(toIndex));
+    if (!isFinite(n)) return;
+    try { vault.moveItem(id, Math.max(0, Math.min(items.length - 1, n)), 'user'); notify(); }
+    catch (e) { showErr(e); }
+  }
+
+  function moveItemBy(id, delta) {
+    const items = layoutItems();
+    const i = items.findIndex(x => x.id === id);
+    if (i < 0 || i + delta < 0 || i + delta >= items.length) return;
+    moveItemTo(id, i + delta);
+  }
+
+  function groupMenuAct(act, id) {
+    if (!groupById(id)) return;
+    switch (act) {
+      case 'toggle': return groupToggle(id);
+      case 'rename': return renameGroupFlow(id);
+      case 'up': return moveItemBy(id, -1);
+      case 'down': return moveItemBy(id, 1);
+      case 'mcpAllow': return groupMcp(id, 'allow');
+      case 'mcpRemove': return groupMcp(id, 'remove');
+      case 'delete': return deleteGroupFlow(id);
+    }
+  }
+
+  function sepMenuAct(act, id) {
+    const it = itemById(id);
+    if (!it || it.type !== 'separator') return;
+    switch (act) {
+      case 'edit': return editSeparatorFlow(id);
+      case 'up': return moveItemBy(id, -1);
+      case 'down': return moveItemBy(id, 1);
+      case 'remove':
+        try { vault.removeSeparator(id, 'user'); notify(); } catch (e) { showErr(e); }
+    }
+  }
+
+  function moveKeyFromPanel(name, gid) {
+    if (typeof name !== 'string' || !vault.listFast().some(s => s.name === name)) return;
+    if (gid !== null && gid !== undefined && gid !== '' && !groupById(String(gid))) return;
+    moveKey(name, gid ? String(gid) : null);
+  }
+
+  async function moveKeyToNewGroup(name) {
+    if (typeof name !== 'string' || !vault.listFast().some(s => s.name === name)) return;
+    const g = await newGroup();
+    if (g) moveKey(name, g.id);
   }
 
   async function deleteKey(arg) {
@@ -660,7 +1313,7 @@ function activateVault(context, version, onChange) {
   // or undefined if the user backed out.
   async function pickMcpScope(s) {
     let names = [];
-    try { names = installer.serverNames(); } catch (e) { /* no config yet */ }
+    try { names = installer.serverNames().filter(n => SERVER_ID_RE.test(n)); } catch (e) { /* no config yet */ }
     if (!names.includes('claude-monitor-vault')) names.push('claude-monitor-vault');
     if (!names.length) return [];                    // nothing to choose between
     const all = t('Every MCP server');
@@ -722,7 +1375,14 @@ function activateVault(context, version, onChange) {
   const EVENT_LABEL = {
     create: t('Creation'), replace: t('Replacement'), delete: t('Deletion'),
     use: t('Use'), burn: t('Burnt'), expire: t('Expired'), mcp: t('MCP authorisation'),
-    ttl: t('Expiry changed'), reveal: t('Revealed'), 'revoke-all': t('Full revocation')
+    ttl: t('Expiry changed'), reveal: t('Revealed'), 'revoke-all': t('Full revocation'),
+    'replace-request': t('Replacement requested'),
+    group: t('Moved to a group'), 'group-create': t('Group created'),
+    'group-rename': t('Group renamed'), 'group-delete': t('Group deleted'),
+    'separator-add': t('Separator added'), 'separator-edit': t('Separator edited'),
+    'separator-remove': t('Separator removed'), 'layout-move': t('Layout reordered'),
+    'mcp-request': t('MCP access requested'), 'mcp-approved': t('MCP request approved'),
+    'mcp-rejected': t('MCP request refused'), 'mcp-withdrawn': t('MCP request withdrawn')
   };
   // Three families: what exposes a value, what modifies the vault, and what happens
   // on its own. That is the useful reading when looking for who touched what.
@@ -730,18 +1390,39 @@ function activateVault(context, version, onChange) {
     use: 'lecture', reveal: 'alerte', 'revoke-all': 'alerte',
     create: 'ecriture', replace: 'ecriture', delete: 'ecriture',
     ttl: 'ecriture', mcp: 'ecriture',
+    'replace-request': 'ecriture', 'mcp-request': 'ecriture',
+    'mcp-approved': 'ecriture', 'mcp-rejected': 'ecriture', 'mcp-withdrawn': 'auto',
+    group: 'ecriture', 'group-create': 'ecriture', 'group-rename': 'ecriture',
+    'group-delete': 'ecriture', 'separator-add': 'ecriture', 'separator-edit': 'ecriture',
+    'separator-remove': 'ecriture', 'layout-move': 'ecriture',
     burn: 'auto', expire: 'auto'
   };
+
+  // A request id says nothing to a reader: the row already names the key and
+  // the author. Group names and server lists, on the other hand, are the detail.
+  function detailText(e) {
+    // An ungrouping carries no detail; entries written before that say 'none'.
+    if (e.event === 'group' && (!e.detail || e.detail === 'none')) return t('No group');
+    if (!e.detail) return '';
+    if (/^mcp-/.test(e.event) && /^[0-9a-f-]{20,}$/i.test(String(e.detail))) return '';
+    if (e.event === 'group-delete') return t('{0} key(s) left ungrouped', String(e.detail));
+    if (e.event === 'group-rename') return t('was {0}', String(e.detail));
+    if (e.event === 'layout-move') {
+      return isFinite(Number(e.detail)) ? t('now in position {0}', String(Number(e.detail) + 1)) : '';
+    }
+    if (e.event === 'mcp-request' && e.detail === 'all') return t('every server');
+    return t(e.detail);
+  }
 
   // Who acted. Stored on entries written since the tracer exists; for older
   // ones, inferred only where the code path allows a single author (a use is
   // always the agent, a reveal always the owner), left blank otherwise.
   function actorOf(e) {
-    if (e.by === 'codex') return 'Codex';
+    if (e.by === 'codex') return 'ChatGPT';
     if (e.by === 'claude') return 'Claude';
     if (e.by === 'user') return t('you');
     if (e.event === 'use' || e.event === 'replace-request') return 'Claude';
-    if (e.event === 'burn' || e.event === 'expire') return '';
+    if (e.event === 'burn' || e.event === 'expire' || e.event === 'mcp-withdrawn') return '';
     if (e.event === 'create' || e.event === 'replace') return '';
     return t('you');
   }
@@ -915,6 +1596,26 @@ function activateVault(context, version, onChange) {
           vscode.window.setStatusBarMessage(t('Settings saved'), 3000);
         }, e => vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))));
       }
+      if (m.type === 'aiPolicy') {
+        // Redrawn only when the change was refused, so the control goes back
+        // to what is really stored. On success the controls already show it,
+        // but the header pill and the "changed outside" warning are drawn from
+        // the stored policy: they get their new state through a message, which
+        // keeps the reader where they are on the page.
+        aiPolicyChange(m).then(ok => {
+          if (!settingsPanel) return;
+          if (!ok) { settingsPanel.webview.html = settingsHtml(); return; }
+          const p = currentPolicy();
+          settingsPanel.webview.postMessage({
+            type: 'aiPolicyState', tampered: p.tampered,
+            mcpLabel: t('MCP: {0}', modeLabel(p.mcpByAI))
+          });
+        }, e => {
+          showErr(e);
+          if (settingsPanel) settingsPanel.webview.html = settingsHtml();
+        });
+        return;
+      }
       if (m.type === 'connect') connect();
       if (m.type === 'audit') showAudit();
       if (m.type === 'revoke') revokeAll();
@@ -933,6 +1634,154 @@ function activateVault(context, version, onChange) {
     });
     settingsPanel.onDidDispose(() => { settingsPanel = null; });
     context.subscriptions.push(settingsPanel);
+  }
+
+  // ------------------------------------------ settings: what the AI may do
+  //
+  // One setting for Claude and ChatGPT, with an optional override per
+  // assistant for people who want them treated differently. The policy file is
+  // signed by the core: what this card writes is what the hooks and the MCP
+  // server read, and a hand edit makes the core fall back to the strictest rules.
+
+  const AI_MODES = ['off', 'ask', 'auto'];
+
+  function currentPolicy() {
+    let p = {};
+    try { p = vault.policy() || {}; } catch (e) { /* unreadable: defaults below */ }
+    return {
+      autoApprove: !!p.autoApprove,
+      mcpByAI: AI_MODES.indexOf(p.mcpByAI) !== -1 ? p.mcpByAI : 'ask',
+      layoutByAI: p.layoutByAI !== false,
+      perAI: (p.perAI && typeof p.perAI === 'object') ? p.perAI : {},
+      tampered: !!p.tampered
+    };
+  }
+
+  function modeLabel(mode) {
+    return mode === 'off' ? t('Off') : mode === 'auto' ? t('Automatic') : t('Ask');
+  }
+
+  function aiPolicyCard() {
+    const p = currentPolicy();
+    const sel = (cur, v) => (cur === v ? ' selected' : '');
+    const modeOpts = cur =>
+      '<option value="off"' + sel(cur, 'off') + '>' + esc(t('Off: the AI never changes MCP access')) + '</option>' +
+      '<option value="ask"' + sel(cur, 'ask') + '>' + esc(t('Ask: removals apply, most grants ask you')) + '</option>' +
+      '<option value="auto"' + sel(cur, 'auto') + '>' + esc(t('Automatic: the AI grants and removes on its own')) + '</option>';
+    const same = esc(t('Same as above'));
+    const perRow = (ai, label) => {
+      const o = p.perAI[ai] || {};
+      const m = AI_MODES.indexOf(o.mcpByAI) !== -1 ? o.mcpByAI : '';
+      const l = typeof o.layoutByAI === 'boolean' ? (o.layoutByAI ? '1' : '0') : '';
+      const r = typeof o.autoApprove === 'boolean' ? (o.autoApprove ? '1' : '0') : '';
+      return '<div class="row"><div class="name">' + esc(label) + '</div>' +
+        '<div class="desc">' + esc(t('MCP access')) + '</div>' +
+        '<select data-ai="' + ai + '" data-field="mcpByAI"><option value=""' + sel(m, '') + '>' + same + '</option>' +
+          modeOpts(m) + '</select>' +
+        '<div class="desc">' + esc(t('Organising keys')) + '</div>' +
+        '<select data-ai="' + ai + '" data-field="layoutByAI"><option value=""' + sel(l, '') + '>' + same + '</option>' +
+          '<option value="1"' + sel(l, '1') + '>' + esc(t('May organise my keys')) + '</option>' +
+          '<option value="0"' + sel(l, '0') + '>' + esc(t('May not organise my keys')) + '</option></select>' +
+        '<div class="desc">' + esc(t('Replacing keys')) + '</div>' +
+        '<select data-ai="' + ai + '" data-field="autoApprove"><option value=""' + sel(r, '') + '>' + same + '</option>' +
+          '<option value="1"' + sel(r, '1') + '>' + esc(t('Replaces keys without asking')) + '</option>' +
+          '<option value="0"' + sel(r, '0') + '>' + esc(t('Asks before replacing a key')) + '</option></select>' +
+        '</div>';
+    };
+    const hasPer = Object.keys(p.perAI).some(k => p.perAI[k] && Object.keys(p.perAI[k]).length);
+    return `<div class="carte${p.tampered ? ' ko' : ''}" id="ia">
+<h3>${esc(t('What the AI may do'))}<span class="pastille">${esc(t('MCP: {0}', modeLabel(p.mcpByAI)))}</span></h3>
+<div class="desc">${esc(t('One setting for Claude and ChatGPT. The AI never reads a value: these rules decide what it may change on its own and what it must ask you first.'))}</div>
+${p.tampered ? '<div class="etat">' + esc(t('The settings file was changed outside the extension, so the AI is held to the strictest rules until you choose again here.')) + '</div>' : ''}
+<div class="row" style="margin-top:14px">
+  <div class="name">${esc(t('MCP access'))}<span class="reco">${esc(t('Recommended: {0}', t('Ask')))}</span></div>
+  <select id="aiMcp">${modeOpts(p.mcpByAI)}</select>
+  <div class="pourquoi">${esc(t('Ask: the AI may remove access, and grant it when it creates a key for named local servers; anything else opens a window here. Automatic: it grants and removes on its own, except for keys that ask before every use, grants to every server and grants to remote servers, which still ask. Removing access always applies at once.'))}</div>
+</div>
+<div class="row">
+  <label class="toggle"><input type="checkbox" id="aiLayout"${p.layoutByAI ? ' checked' : ''}>
+    <span class="name">${esc(t('Let the AI organise my keys into groups'))}</span></label>
+  <div class="pourquoi">${esc(t('Groups and separators only change where a key sits in the list, never what it can do. Every change the AI makes shows in the status bar and in the access log.'))}</div>
+</div>
+<div class="row">
+  <label class="toggle"><input type="checkbox" id="aiReplace"${p.autoApprove ? ' checked' : ''}>
+    <span class="name">${esc(t('Replace keys without asking'))}</span></label>
+  <div class="pourquoi">${esc(t('Off by default: replacing a key destroys the old value for good, so the AI asks first. Useful for a long unattended session; turn it back off afterwards.'))}</div>
+</div>
+<details${hasPer ? ' open' : ''}>
+  <summary>${esc(t('Treat Claude and ChatGPT differently'))}</summary>
+  ${perRow('claude', 'Claude')}
+  ${perRow('codex', 'ChatGPT / Codex')}
+</details>
+</div>`;
+  }
+
+  // Resolves true when the change is stored, false when the user declined or
+  // the message was malformed (the page is then redrawn to the stored state).
+  async function aiPolicyChange(m) {
+    const cur = currentPolicy();
+    const ai = m.ai === 'claude' || m.ai === 'codex' ? m.ai : null;
+    if (m.ai && !ai) return false;
+    if (['mcpByAI', 'layoutByAI', 'autoApprove'].indexOf(m.field) === -1) return false;
+    const who = ai ? aiName(ai) : t('the AI');
+    let patch;
+    let turnsAuto = false, turnsReplace = false;
+    if (!ai) {
+      if (m.field === 'mcpByAI') {
+        if (AI_MODES.indexOf(m.value) === -1) return false;
+        patch = { mcpByAI: m.value };
+        turnsAuto = m.value === 'auto' && cur.mcpByAI !== 'auto';
+      } else if (m.field === 'layoutByAI') {
+        patch = { layoutByAI: !!m.value };
+      } else {
+        patch = { autoApprove: !!m.value };
+        turnsReplace = !!m.value && !cur.autoApprove;
+      }
+    } else {
+      // Only the one field moves: the core merges overrides field by field,
+      // and an explicit null removes one ("Same as above").
+      const was = (cur.perAI[ai] || {})[m.field];
+      let val;
+      if (m.value === '' || m.value == null) val = null;
+      else if (m.field === 'mcpByAI') {
+        if (AI_MODES.indexOf(m.value) === -1) return false;
+        val = m.value;
+      } else {
+        val = m.value === '1' || m.value === true;
+      }
+      // What this assistant is actually held to, before and after: its
+      // override, or the shared setting when it has none. "Same as above" over
+      // a shared Automatic turns Automatic on for it just as surely as picking
+      // Automatic does, and asks the same confirmation.
+      const before = was !== undefined && was !== null ? was : cur[m.field];
+      const after = val !== null ? val : cur[m.field];
+      turnsAuto = m.field === 'mcpByAI' && after === 'auto' && before !== 'auto';
+      turnsReplace = m.field === 'autoApprove' && after === true && before !== true;
+      patch = { perAI: { [ai]: { [m.field]: val } } };
+    }
+    if (turnsAuto) {
+      const go = t('Turn on Automatic');
+      const yes = await vscode.window.showWarningMessage(
+        t('Let {0} grant MCP access on its own?', who),
+        { modal: true,
+          detail: t('Automatic: the AI grants and removes MCP access without asking you. Keys that ask before every use, grants to every server and grants to remote servers still ask. A grant puts a key within reach of an MCP server, so turn this on only if you trust the servers you have configured.') },
+        go);
+      if (yes !== go) return false;
+    }
+    if (turnsReplace) {
+      const allow = t('Allow without asking');
+      const yes = await vscode.window.showWarningMessage(
+        t('Let {0} replace keys without asking?', who),
+        { modal: true,
+          detail: t('The AI will be able to overwrite the value of any existing key on its own, and the old value cannot be recovered. It still cannot read a value, and it still cannot delete a key: deletion stays yours.') +
+            '\n\n' + t('Useful for a long unattended session. Turn it back off afterwards.') },
+        allow);
+      if (yes !== allow) return false;
+    }
+    vault.setPolicy(patch);
+    notify();
+    vscode.window.setStatusBarMessage(t('Settings saved'), 3000);
+    return true;
   }
 
   function settingsHtml() {
@@ -1134,6 +1983,7 @@ function activateVault(context, version, onChange) {
     <div class="groupe">${esc(t('Protection'))}</div>
     <a href="#connexion" ${codexConnection.providers.includes('claude')?'':'hidden'}>${esc(t('Connection to Claude Code'))}</a>
     <a href="#codex-connection">ChatGPT / Codex</a>
+    <a href="#ia">${esc(t('What the AI may do'))}</a>
     <a href="#secours">${esc(t('Recovery phrase'))}</a>
     <a href="#sauvegarde">${esc(t('Backup file'))}</a>
     <a href="#corbeille">${esc(t('Bin'))}</a>
@@ -1176,6 +2026,8 @@ ${codexConnection.error?'<div class="etat">'+esc(codexConnection.error)+'</div>'
 <div class="actions"><button class="doux" id="codexConnect">${esc(t('Connect Codex to the vault'))}</button>
 <button class="doux" id="codexDisconnect" ${codexConnection.configured?'':'disabled'}>${esc(t('Disconnect'))}</button></div>
 </div>
+
+${aiPolicyCard()}
 
 <div class="carte${rec.enabled ? '' : ' ko'}" id="secours">
 <h3>${esc(t('Recovery phrase'))}<span class="pastille">${esc(rec.enabled ? t('active') : t('not set up'))}</span></h3>
@@ -1556,6 +2408,37 @@ ${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
   $('jour').addEventListener('click', function () { api.postMessage({ type: 'audit' }); });
   $('rev').addEventListener('click', function () { api.postMessage({ type: 'revoke' }); });
 
+  // What the AI may do: each control sends one field, the host merges it into
+  // the signed policy. Turning something riskier on asks there, not here.
+  $('aiMcp').addEventListener('change', function (e) {
+    api.postMessage({ type: 'aiPolicy', field: 'mcpByAI', value: e.currentTarget.value });
+  });
+  $('aiLayout').addEventListener('change', function (e) {
+    api.postMessage({ type: 'aiPolicy', field: 'layoutByAI', value: e.currentTarget.checked });
+  });
+  $('aiReplace').addEventListener('change', function (e) {
+    api.postMessage({ type: 'aiPolicy', field: 'autoApprove', value: e.currentTarget.checked });
+  });
+  [].forEach.call(document.querySelectorAll('select[data-ai]'), function (s) {
+    s.addEventListener('change', function () {
+      api.postMessage({ type: 'aiPolicy', ai: s.getAttribute('data-ai'),
+                        field: s.getAttribute('data-field'), value: s.value });
+    });
+  });
+  // After a stored change: the pill and the warning follow the policy as the
+  // host now reads it, without rebuilding the page under the reader.
+  window.addEventListener('message', function (ev) {
+    var m = ev.data || {};
+    if (m.type !== 'aiPolicyState') return;
+    var card = $('ia');
+    if (!card) return;
+    var pill = card.querySelector('.pastille');
+    if (pill && typeof m.mcpLabel === 'string') pill.textContent = m.mcpLabel;
+    card.classList.toggle('ko', !!m.tampered);
+    var warn = card.querySelector('.etat');
+    if (warn && !m.tampered) warn.parentNode.removeChild(warn);
+  });
+
   // The rail follows the reading position. An observer rather than a scroll
   // handler: the browser reports what is on screen instead of us recomputing
   // offsets on every pixel, and a settings page that stutters while scrolling
@@ -1651,7 +2534,7 @@ ${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
         '<td><span class="ev ' + cls + '">' + esc(EVENT_LABEL[e.event] || e.event) + '</span></td>' +
         '<td class="n">' + esc(e.name || '') + '</td>' +
         '<td class="w' + (who === 'Claude' ? ' claude' : '') + '">' + esc(who) + '</td>' +
-        '<td class="d">' + esc(e.detail ? t(e.detail) : '') + '</td></tr>';
+        '<td class="d">' + esc(detailText(e)) + '</td></tr>';
     }).join('');
 
     const summary = [
@@ -2287,7 +3170,15 @@ ${entries.length
     vscode.commands.registerCommand('claudeVault.togglePublic', togglePublic),
     vscode.commands.registerCommand('claudeVault.toggleConfirm', toggleConfirm),
     vscode.commands.registerCommand('claudeVault.recovery', recoveryCreate),
-    vscode.commands.registerCommand('claudeVault.recoveryRestore', recoveryRestoreFlow)
+    vscode.commands.registerCommand('claudeVault.recoveryRestore', recoveryRestoreFlow),
+    vscode.commands.registerCommand('claudeVault.newGroup', newGroup),
+    vscode.commands.registerCommand('claudeVault.newSeparator', newSeparator),
+    vscode.commands.registerCommand('claudeVault.setGroup', setGroup),
+    vscode.commands.registerCommand('claudeVault.organize', organize),
+    vscode.commands.registerCommand('claudeVault.renameGroup', renameGroupFlow),
+    vscode.commands.registerCommand('claudeVault.deleteGroup', deleteGroupFlow),
+    vscode.commands.registerCommand('claudeVault.suggestGroups', suggestGroupsFlow),
+    vscode.commands.registerCommand('claudeVault.groupMcp', groupMcp)
   );
 
   // Registered on its own, and forgivingly: marker completion is a convenience,
@@ -2347,17 +3238,32 @@ ${entries.length
   // also changes outside the extension: a hook that burns a single-use key deletes
   // it without going through here, so state is compared on every tick, or the panel
   // would stay stuck on a key that is gone.
-  let fingerprint = vault.listFast().map(s => s.name + ':' + s.uses).join('|');
+  // The signature covers what the panel shows: uses, but also the group of each
+  // key, its MCP scope, the layout and the AI setting. A change made by the AI
+  // through set.js or the MCP server touches only those, and the panel would
+  // otherwise keep showing the old arrangement until the next unrelated change.
+  function stateSig() {
+    let lay = '', pol = '';
+    try { lay = JSON.stringify(layoutItems()); } catch (e) { /* no layout */ }
+    try { pol = JSON.stringify(displayPolicy()); } catch (e) { /* defaults */ }
+    return vault.listFast().map(s => s.name + ':' + s.uses + ':' + (s.groupId || '') + ':' +
+      (s.mcp ? (s.mcpServers && s.mcpServers.length ? s.mcpServers.join('+') : '*') : '-')).join('|') +
+      '#' + lay + '#' + pol;
+  }
+  let fingerprint = stateSig();
   const sweep = setInterval(() => {
+    // The watcher may have died, or the vault directory may only exist now.
+    if (!vaultWatcher && watchVault()) closeParentWatcher();
     reviewPending();          // safety net if fs.watch is unavailable or died
+    reviewMcp();
     reviewUses();
     const gone = vault.sweep();
     vault.sweepTmp(3600000);
     if (gone.length) {
       vscode.window.showInformationMessage(t('{0}: expired and removed.', gone.join(', ')));
     }
-    const nowSig = vault.listFast().map(s => s.name + ':' + s.uses).join('|');
-    if (nowSig !== fingerprint) { fingerprint = nowSig; notify(); }
+    const nowSig = stateSig();
+    if (nowSig !== fingerprint) { fingerprint = nowSig; noticeAiChanges(); notify(); }
   }, 60000);
 
   // The minute sweep cannot serve a hook that gives up after fifty-five seconds,
@@ -2377,24 +3283,54 @@ ${entries.length
   const reread = () => {
     vaultTimer = null;
     reviewPending();
-    const nowSig = vault.listFast().map(s => s.name + ':' + s.uses).join('|');
-    if (nowSig !== fingerprint) { fingerprint = nowSig; notify(); }
+    reviewMcp();
+    const nowSig = stateSig();
+    if (nowSig !== fingerprint) { fingerprint = nowSig; noticeAiChanges(); notify(); }
   };
-  try {
-    vaultWatcher = fs.watch(vault.VAULT_DIR, (event, fname) => {
-      // A use awaiting confirmation is a hook blocked on a countdown, so that
-      // file has to wake us as surely as the vault itself.
-      if (fname === 'pending-use.json') { reviewUses(); return; }
-      if (fname && fname !== path.basename(vault.VAULT_PATH)) return;
-      // Debounced: an atomic write is a create then a rename, so two events.
-      if (vaultTimer) clearTimeout(vaultTimer);
-      vaultTimer = setTimeout(reread, 250);
-    });
-    vaultWatcher.on('error', () => {
-      try { vaultWatcher.close(); } catch (e) { /* already gone */ }
-      vaultWatcher = null;
-    });
-  } catch (e) { /* fs.watch unavailable: the sweep is enough */ }
+  // The layout and the AI setting live in their own files beside the vault.
+  const WATCHED = [path.basename(vault.VAULT_PATH), 'layout.json', 'policy.json'];
+  let parentWatcher = null;
+  function closeParentWatcher() {
+    if (!parentWatcher) return;
+    try { parentWatcher.close(); } catch (e) { /* already gone */ }
+    parentWatcher = null;
+  }
+  // Returns true once the vault directory is watched.
+  function watchVault() {
+    if (vaultWatcher) return true;
+    try {
+      vaultWatcher = fs.watch(vault.VAULT_DIR, (event, fname) => {
+        // A use awaiting confirmation is a hook blocked on a countdown, so that
+        // file has to wake us as surely as the vault itself.
+        if (fname === 'pending-use.json') { reviewUses(); return; }
+        if (fname && WATCHED.indexOf(fname) === -1) return;
+        // Debounced: an atomic write is a create then a rename, so two events.
+        if (vaultTimer) clearTimeout(vaultTimer);
+        vaultTimer = setTimeout(reread, 250);
+      });
+      vaultWatcher.on('error', () => {
+        try { vaultWatcher.close(); } catch (e) { /* already gone */ }
+        vaultWatcher = null;            // the minute sweep attaches it again
+      });
+      return true;
+    } catch (e) { return false; }      // missing directory, or no fs.watch here
+  }
+  // The vault directory may not exist yet: on a fresh machine the first key is
+  // often created by Claude itself, through add.js, while the panel is open.
+  // fs.watch cannot watch what is not there, so the parent is watched until
+  // the directory appears, and the minute sweep retries as a last resort.
+  if (!watchVault()) {
+    try {
+      parentWatcher = fs.watch(path.dirname(vault.VAULT_DIR), (event, fname) => {
+        if (fname && fname !== path.basename(vault.VAULT_DIR)) return;
+        if (!watchVault()) return;
+        closeParentWatcher();
+        if (vaultTimer) clearTimeout(vaultTimer);
+        vaultTimer = setTimeout(reread, 250);
+      });
+      parentWatcher.on('error', closeParentWatcher);
+    } catch (e) { /* no ~/.claude either: the sweep attaches the watcher later */ }
+  }
 
   context.subscriptions.push({
     dispose: () => {
@@ -2402,6 +3338,7 @@ ${entries.length
       clearInterval(useWatch);
       if (vaultTimer) clearTimeout(vaultTimer);
       if (vaultWatcher) { try { vaultWatcher.close(); } catch (e) { /* shutting down */ } }
+      closeParentWatcher();
       // Only what is still the very entry that was marked. A name that now
       // points at a different key is someone else's work, not ours to delete.
       let live = [];
@@ -2454,11 +3391,15 @@ ${entries.length
   }
 
   reviewPending();     // a request may have been left waiting from a past session
+  reviewMcp();
+  askLegacyAutoApprove();
 
   return { snapshot, getDefaults, setDefaults, createFromPanel, addKey, deleteKey, changeTtl,
            copyMarker, revealKey, toggleMcp, keyActions, showAudit, showSettings,
            revokeAll, connect, showDetails, editNote, toggleAutoApprove, reviewPending,
-           mcpSnippet };
+           mcpSnippet, reviewMcp,
+           groupToggle, groupMenuAct, sepMenuAct, collapseAll, moveItemTo,
+           moveKey: moveKeyFromPanel, moveKeyToNewGroup };
 }
 
 module.exports = { activateVault };

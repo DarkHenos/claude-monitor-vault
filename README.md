@@ -14,7 +14,7 @@ local files. Your familiar Claude Monitor & Vault now includes optional Codex su
  · [User guide](docs/GUIDE.md) · [Release notes](CHANGELOG.md)
  · [Report an issue](https://github.com/DarkHenos/claude-monitor-vault/issues)
 
-**Version 1.1.0** · VS Code 1.106+ · Windows, macOS and Linux · English, French,
+**Version 1.2.0** · VS Code 1.106+ · Windows, macOS and Linux · English, French,
 Spanish, German and Portuguese.
 
 ## One panel for your assistants
@@ -33,9 +33,14 @@ The quota selector controls what you see; the actions menu controls what you lau
 The status bar and activity badge follow your selection. Open **···** for model
 selection, session launch, shared memory and vault connection actions.
 
-Both assistants use the same quota bar design. In **Assistant settings**, choose
-usage-based or custom Codex colours: normal below 70%, warning from 70%, and
-critical from 90%. The settings page includes each displayed assistant's vault
+Both assistants share one quota renderer, so their rows look and behave the same:
+a label from the window length (**Session (5h)**, **Week**, or hours and days),
+the percentage and bar, a live **resets in 2 h 14** countdown refreshed every
+minute (every 10 seconds near a reset), the optional projection, the 70% / 90%
+levels and the same "updated / next update" footer. In **Both assistants** mode
+the status bar and activity badge show both providers. Only the colour differs:
+in **Assistant settings**, choose usage-based or custom Codex colours: normal
+below 70%, warning from 70%, and critical from 90%. The settings page includes each displayed assistant's vault
 connection and a dedicated Codex connection status.
 
 *The panel image uses demonstration values. Codex counters describe the windows
@@ -56,7 +61,7 @@ returned for the connected account, not every limit on the ChatGPT website.*
    model, review the proposed memory changes, and launch the new session.
 
 For a downloaded build, use **Extensions → ··· → Install from VSIX** and select
-`claude-monitor-vault-1.1.0.vsix`.
+`claude-monitor-vault-1.2.0.vsix`.
 
 ## Bring project knowledge to the next session
 
@@ -105,17 +110,64 @@ or access mode. A deliberate disconnection is not automatically undone.
 | New-session model choice | Default, Sonnet, Opus, Haiku or model ID | Available model catalog, default or model ID |
 | Shared project notes | Reference from `CLAUDE.md` | Reference from `AGENTS.md` |
 | Local vault access | Hooks, markers and MCP proxy | `vault_list` and `vault_run` through a project MCP connection |
+| Create keys and decide MCP | `add.js` with `--mcp`, `--mcp=SERVERS`, `--no-mcp`, `--group` | `vault_create` |
+| Change MCP access or groups | `set.js` | `vault_set` and `vault_layout` |
 
 Expiry, optional per-use confirmation, an access log, encrypted backups and
 recovery tools are available. Output redaction is best effort; a program receiving
 a secret can still transform or disclose it.
 
+### Groups and separators
+
+Arrange keys like folders in a sidebar. Groups exist empty or filled, fold and
+unfold, and keep their order; separators split the list, with or without a small
+title. Drag keys, groups and separators to reorder them, or use **Move up** and
+**Move down** from the menus. Search matches names, groups and descriptions.
+**Suggest groups** proposes groups from shared prefixes (rotation suffixes such
+as `_2026_10` removed, environments such as `DEV` and `PROD` kept, near spellings
+flagged) and applies nothing until you confirm. A group menu can allow or remove
+MCP access for every key in it, with Undo on removal. Groups only change where a
+key sits in the list, never what it can do, and they travel with export and import.
+
+### The AI decides MCP, within your rules
+
+When Claude or ChatGPT creates a key, it says what the key may do: shell only,
+named MCP servers, or every server. Claude uses `add.js`; ChatGPT uses
+`vault_create`, which runs a program and stores its output without ever returning
+the value. A value already stored under another name is refused. Later changes go
+through `set.js` (Claude) or `vault_set` and `vault_layout` (ChatGPT):
+
+```sh
+node set.js STRIPE_SECRET_KEY --mcp=stripe --reason "the Stripe MCP server needs it"
+node set.js STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET --group "Stripe"
+node set.js --new-group "Scaleway" --at 1
+```
+
+Placing keys and reorganising apply at once, and removing or narrowing MCP access
+always applies at once. Granting or widening follows **What the AI may do**, a new
+card in the vault settings window:
+
+| MCP access | Behaviour |
+|---|---|
+| **Off** | The AI never changes MCP access. |
+| **Ask** (default) | The AI may remove access, and grant it at creation for named local servers. Anything else opens one VS Code window: who asks, keys, servers and the AI's reason, with **Allow**, **Choose servers** or **Refuse**. |
+| **Automatic** | The AI grants and removes on its own, except for keys that ask before every use, grants to every server and grants to remote servers, which still ask. Turning it on asks for confirmation. |
+
+The same card controls whether the AI may organise keys into groups and whether
+it may replace keys without asking, with an optional override per assistant.
+Every change is written to the access log with its author (Claude, ChatGPT or
+you), and a change made by the AI shows briefly in the status bar.
+
 [Explore vault setup, recovery and security boundaries](docs/GUIDE.md#claude-vault).
 
 ## A familiar extension, updated
 
-Version **1.1.0** adds the unified quota selector, assistant and model switching,
-linked project memories, Codex vault tools and a refreshed gauge-and-link logo.
+Version **1.2.0** adds groups and separators in the vault, MCP access decided by
+the AI under a setting you control, `set.js` for Claude and the `vault_create`,
+`vault_set` and `vault_layout` tools for ChatGPT, and ChatGPT quota rows aligned
+with Claude's. Version 1.1.0 brought the unified quota selector, assistant and
+model switching, linked project memories, Codex vault tools and the
+gauge-and-link logo.
 The Marketplace identifier remains **`alexossart.claude-monitor-vault`**; existing
 Claude settings, command IDs and encrypted vault files stay in place.
 

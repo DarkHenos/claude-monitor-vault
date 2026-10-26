@@ -91,9 +91,119 @@ function writeAtomic(file, data) {
   } finally {
     fs.closeSync(fd);
   }
-  fs.renameSync(tmp, file);   // atomic on NTFS as on POSIX
+  // Atomic on NTFS as on POSIX. But Windows refuses to replace a file another
+  // process is reading at that very instant (EPERM / EACCES / EBUSY), and 1.2
+  // made that routine: set.js, add.js and the MCP server poll the vault while
+  // VS Code writes the user's answer, and the other way round. A brief retry,
+  // as graceful-fs does, instead of failing an approval the user just gave.
+  for (let attempt = 0; ; attempt++) {
+    try { fs.renameSync(tmp, file); break; }
+    catch (e) {
+      if (attempt >= 40 || !e || !/^(EPERM|EACCES|EBUSY)$/.test(e.code)) {
+        try { fs.unlinkSync(tmp); } catch (_) { /* nothing left to clean */ }
+        throw e;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
   // No lockDown here: the file inherits the directory's ACL, restricted at
   // creation time. On POSIX, mode 0600 is already set by openSync.
+}
+
+// ------------------------------------------------------------------ write lock
+//
+// Every writer is its own process: the extension host, the hooks, set.js,
+// add.js, the MCP server. Each one loads, changes and saves, and checking the
+// counter just before the save does not close the gap: another process can
+// land its own save in between, and the last rename wins with a stale copy.
+// That loses the other process's key, or leaves the vault one step behind its
+// key file, which every later load refuses as a replay. The rename retry above
+// turned that gap from microseconds into a second.
+//
+// So every read-modify-write of the vault, the layout or the policy holds this
+// lock from its first read to its last write. Re-entrant within a process:
+// put() runs inside approveReplace(), createGroup() inside setKeyGroup(), and
+// so on. A holder that died, or that has held it for longer than any real
+// operation takes, is broken rather than waited on forever.
+const LOCK_PATH = path.join(VAULT_DIR, 'vault.lock');
+const LOCK_WAIT_MS = 5000;
+const LOCK_STALE_MS = 10000;
+let _lockDepth = 0;
+
+function readLockFile() {
+  try { return fs.readFileSync(LOCK_PATH, 'utf8'); } catch (e) { return null; }
+}
+
+// True when the lock on disk belongs to nobody alive any more.
+function lockIsStale(text) {
+  let info = null;
+  try { info = JSON.parse(text); } catch (e) { /* being written, or garbage */ }
+  if (!info || typeof info !== 'object') {
+    // Judged on its age alone: a holder writes its pid right after creating
+    // the file, so an unreadable lock is either brand new or left by a crash.
+    try { return Date.now() - fs.statSync(LOCK_PATH).mtimeMs > LOCK_STALE_MS; } catch (e) { return false; }
+  }
+  if (Date.now() - (Number(info.at) || 0) > LOCK_STALE_MS) return true;
+  const pid = Number(info.pid);
+  if (!pid) return true;
+  // Our own pid while we hold nothing: left behind by a release that failed.
+  if (pid === process.pid) return true;
+  try { process.kill(pid, 0); return false; }
+  catch (e) { return e.code !== 'EPERM'; }          // EPERM: alive, just not ours
+}
+
+function withVaultLock(fn) {
+  if (_lockDepth > 0) {
+    _lockDepth++;
+    try { return fn(); } finally { _lockDepth--; }
+  }
+  ensureDirs();
+  const token = crypto.randomBytes(8).toString('hex');
+  const until = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    let fd = null;
+    try { fd = fs.openSync(LOCK_PATH, 'wx', 0o600); }
+    catch (e) {
+      // EPERM / EACCES: Windows refuses to create a file whose previous copy is
+      // still being deleted. Same answer as an existing lock: wait a little.
+      if (!e || !/^(EEXIST|EPERM|EACCES|EBUSY)$/.test(e.code)) throw e;
+    }
+    if (fd !== null) {
+      try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), t: token })); }
+      finally { fs.closeSync(fd); }
+      break;
+    }
+    const seen = readLockFile();
+    // Read twice and compared: a lock replaced between the judgement and the
+    // removal belongs to someone else, and must not be the one that goes.
+    if (seen !== null && lockIsStale(seen) && readLockFile() === seen) {
+      try { fs.unlinkSync(LOCK_PATH); continue; } catch (e) { /* someone else got there */ }
+    }
+    if (Date.now() > until) {
+      const err = fail('the vault is busy with another operation: try again in a moment');
+      err.busy = true;
+      throw err;
+    }
+    sleepSync(25);
+  }
+  _lockDepth = 1;
+  try { return fn(); }
+  finally {
+    _lockDepth = 0;
+    // Only our own lock: if it was broken as stale meanwhile, the file now
+    // belongs to whoever took it next.
+    try {
+      const cur = JSON.parse(readLockFile() || 'null');
+      if (cur && cur.t === token) fs.unlinkSync(LOCK_PATH);
+    } catch (e) { /* gone already, or unreadable: the stale rule cleans it */ }
+  }
+}
+
+function locked(fn) {
+  return function lockedCall() {
+    const args = arguments;
+    return withVaultLock(() => fn.apply(this, args));
+  };
 }
 
 function b64(buf) { return Buffer.from(buf).toString('base64'); }
@@ -266,13 +376,16 @@ let _downgrade = null;   // why the OS store was refused, when it was
 // every secret away for good, so it must never be trusted on the write alone.
 function storeKey(keyBuf, seq) {
   const errs = [];
+  // The "a signed policy exists" marker survives a new key (revocation, phrase
+  // import): the policy is signed again under it, and must still be required.
+  const pol = policyMarker() ? 1 : undefined;
   for (const mode of providerChain()) {
     const p = PROVIDERS[mode];
     try {
       const blob = p.protect(keyBuf);
       const back = p.unprotect(blob);
       if (!Buffer.isBuffer(back) || !back.equals(keyBuf)) throw fail('round trip mismatch');
-      writeAtomic(KEY_PATH, JSON.stringify({ v: 1, mode, blob, seq }));
+      writeAtomic(KEY_PATH, JSON.stringify({ v: 1, mode, blob, seq, pol }));
       _masterMode = mode;
       // Keep why we had to settle for less: "no keyring" and "the keyring
       // stores in clear" both end up in 'plain' and call for different actions.
@@ -328,7 +441,25 @@ function currentSeq() {
 function bumpSeq(next) {
   masterKey();                       // resolves the current mode, cached per process
   const kf = readKeyFile();
-  writeAtomic(KEY_PATH, JSON.stringify({ v: 1, mode: kf.mode, blob: kf.blob, seq: next }));
+  writeAtomic(KEY_PATH, JSON.stringify({ v: 1, mode: kf.mode, blob: kf.blob, seq: next, pol: kf.pol ? 1 : undefined }));
+}
+
+// Once a signed policy has been written, its absence is itself a change: a
+// policy.json deleted, emptied or stripped of its signature would otherwise
+// read as a file from before signatures existed, and fall back to defaults
+// that are MORE permissive than an "off" the user chose. The marker sits in the
+// key file, next to the anti-replay counter, and carries the same trust: the
+// file whose loss already costs every key. Read without the master key, so the
+// display path can use it too.
+function policyMarker() {
+  try { return !!JSON.parse(fs.readFileSync(KEY_PATH, 'utf8')).pol; } catch (e) { return false; }
+}
+
+function markPolicySigned() {
+  if (policyMarker()) return;
+  masterKey();
+  const kf = readKeyFile();
+  writeAtomic(KEY_PATH, JSON.stringify({ v: 1, mode: kf.mode, blob: kf.blob, seq: kf.seq || 0, pol: 1 }));
 }
 
 function derive(info, salt, len) {
@@ -474,7 +605,15 @@ function exportBuild() {
     secrets: v.secrets,
     audit: Array.isArray(v.audit) ? v.audit : [],
     trash: readTrash(),
-    policy: { autoApprove: !!p.autoApprove },
+    // The decisions travel, the signature does not: it is bound to this
+    // machine's key, and the importing side signs again under its own.
+    policy: {
+      autoApprove: !!p.autoApprove, mcpByAI: p.mcpByAI, layoutByAI: !!p.layoutByAI,
+      perAI: p.perAI || {}
+    },
+    // Display only, but a restore that hands back thirty keys in one flat list
+    // after the user spent an afternoon sorting them is not a restore.
+    layout: readLayout().items,
     defaults: uiDefaults(),
     uiLang: uiLang()
   }), 'utf8');
@@ -498,24 +637,24 @@ function exportBuild() {
 function exportWrite(file) {
   const text = exportBuild();
   writeAtomic(String(file), text);
-  setPolicy(Object.assign(policy(), { exportPath: String(file), exportAt: Date.now() }));
+  setExportFields({ exportPath: String(file), exportAt: Date.now() });
   return { file: String(file), bytes: text.length };
 }
 
 // Called after every structural save. Silent on failure by design: an unplugged
 // drive must not make saving a key fail, and the panel reports the staleness.
 function exportRefresh() {
-  const p = policy();
+  const p = exportFields(readPolicyFile());
   if (!p.exportPath) return false;
   try {
     writeAtomic(p.exportPath, exportBuild());
-    setPolicy(Object.assign(policy(), { exportAt: Date.now() }));
+    setExportFields({ exportAt: Date.now() });
     return true;
   } catch (e) { return false; }
 }
 
 function exportStatus() {
-  const p = policy();
+  const p = exportFields(readPolicyFile());
   const st = {
     path: p.exportPath || null, at: p.exportAt || null, present: false, at_file: null,
     // Portable means: the file carries the envelope, so the phrase opens it
@@ -538,7 +677,7 @@ const DEFAULT_EXPORT = 'claude-vault-backup.' + 'cvault';
 
 function exportEnsure() {
   try {
-    const p = policy();
+    const p = exportFields(readPolicyFile());
     if (p.exportPath) {
       if (fs.existsSync(p.exportPath)) return { created: false, path: p.exportPath };
       // Configured but gone: the drive was unplugged, or someone tidied up.
@@ -553,11 +692,11 @@ function exportEnsure() {
   } catch (e) { return { created: false, path: null, error: e.message }; }
 }
 
+// Explicit nulls, through the unsigned path: forgetting where the backup goes
+// must work even while the master key is being thrown away (revokeAll).
 function exportForget() {
-  const p = policy();
-  delete p.exportPath;
-  delete p.exportAt;
-  setPolicy(p);
+  if (!readPolicyFile()) return true;
+  setExportFields({ exportPath: null, exportAt: null });
   return true;
 }
 
@@ -651,9 +790,13 @@ function exportImport(text, phrase) {
   // exactly like the replay this counter exists to catch.
   const seq = Math.max(currentSeq(), Number(data.seq) || 0);
   if (mode === 'phrase') {
+    // Read while the old key still verifies it, signed again just below.
+    let keptPolicy = null;
+    try { if (readPolicyFile()) keptPolicy = policy(); } catch (e) { /* safe defaults */ }
     _master = master;
     _masterMode = null;
     storeKey(master, seq);
+    if (readPolicyFile()) { try { resignPolicy(keptPolicy); } catch (e) { /* safe defaults */ } }
     // The local envelope, if there was one, wraps the key we have just replaced.
     // Left alone, recoveryStatus() would keep saying "active" while the phrase
     // it names restores a key that opens nothing. The imported envelope is the
@@ -679,9 +822,33 @@ function exportImport(text, phrase) {
     const fusion = local.concat(data.trash.filter(i => i && i.id && !vus.has(i.id)));
     try { writeTrash(purgeTrashList(fusion)); } catch (e) { /* the vault is in */ }
   }
-  if (data.policy) {
-    try { setPolicy(Object.assign(policy(), { autoApprove: !!data.policy.autoApprove })); }
+  if (data.policy && typeof data.policy === 'object') {
+    // Only what is there and valid: an export written before these settings
+    // existed carries autoApprove alone, and must not reset the rest here.
+    const dp = data.policy;
+    const patch = {};
+    if (typeof dp.autoApprove === 'boolean') patch.autoApprove = dp.autoApprove;
+    if (MCP_MODES.indexOf(dp.mcpByAI) !== -1) patch.mcpByAI = dp.mcpByAI;
+    if (typeof dp.layoutByAI === 'boolean') patch.layoutByAI = dp.layoutByAI;
+    if (dp.perAI && typeof dp.perAI === 'object') {
+      // Restored, not merged: setPolicy() overlays a given override on the
+      // local one, so every field is named, the absent ones as null, and what
+      // comes out is exactly the exported override.
+      patch.perAI = {};
+      for (const ai of AIS) {
+        patch.perAI[ai] = dp.perAI[ai]
+          ? Object.assign({ autoApprove: null, mcpByAI: null, layoutByAI: null }, cleanOverride(dp.perAI[ai]))
+          : null;
+      }
+    }
+    try { setPolicy(patch); }
     catch (e) { /* keeps the local setting */ }
+  }
+  if (Array.isArray(data.layout)) {
+    try { writeLayout(data.layout); } catch (e) { /* keeps the local layout */ }
+    // The structural save above refreshed the export before the layout came
+    // back; refresh it again so the file matches what was just restored.
+    refreshAfterLayout();
   }
   if (data.defaults && data.defaults.set) {
     try { setUiDefaults(data.defaults); } catch (e) { /* keeps the local ones */ }
@@ -695,6 +862,7 @@ function exportImport(text, phrase) {
       audit: (v.audit || []).length,
       trash: Array.isArray(data.trash) ? data.trash.length : 0,
       settings: !!data.policy, defaults: !!(data.defaults && data.defaults.set),
+      layout: Array.isArray(data.layout) ? data.layout.length : 0,
       language: typeof data.uiLang === 'string' ? data.uiLang : null
     }
   };
@@ -896,6 +1064,7 @@ function restoreTrashed(id) {
   }
 
   v.secrets[entry.id] = entry;
+  dropMcpRequestsFor(v, [entry.name]);
   audit(v, 'untrash', entry.name, renamed ? it.name : null, 'user');
   saveRaw(v, true);
   writeTrash(items.filter(i => i.id !== id));
@@ -1096,7 +1265,16 @@ function isExpired(entry, now) {
 }
 
 // Purges expired entries. Returns the removed names.
+// Runs on the panel's render path and before every use, so a vault that does
+// not exist yet costs nothing here, and a lock held elsewhere only postpones
+// the purge to the next call instead of failing the caller.
 function sweep() {
+  if (!fs.existsSync(VAULT_PATH) && !fs.existsSync(TRASH_PATH)) return [];
+  try { return withVaultLock(sweepLocked); }
+  catch (e) { if (e && e.busy) return []; throw e; }
+}
+
+function sweepLocked() {
   let v;
   try { v = loadRaw(); } catch (e) { return []; }
   try { purgeTrash(); } catch (e) { /* the bin must never block the vault */ }
@@ -1151,9 +1329,10 @@ function list() {
   let v;
   try { v = loadRaw(); } catch (e) { return { error: e.message, secrets: [] }; }
   const now = Date.now();
+  const groups = groupIndex();
   const secrets = Object.keys(v.secrets).map(id => {
     const s = v.secrets[id];
-    return {
+    return Object.assign({
       id, name: s.name, kind: s.kind, hint: s.hint, length: s.length,
       fingerprint: s.fingerprint, policy: s.policy,
       createdAt: s.createdAt, expiresAt: s.expiresAt || null,
@@ -1161,7 +1340,7 @@ function list() {
       lastUsedAt: s.lastUsedAt || null,
       expiresIn: s.expiresAt ? Math.max(0, s.expiresAt - now) : null,
       note: s.note || null
-    };
+    }, groupFields(s, groups));
   }).sort((a, b) => a.name.localeCompare(b.name));
   return { secrets };
 }
@@ -1177,9 +1356,10 @@ function listFast() {
   catch (e) { return []; }
   if (!v || !v.secrets) return [];
   const now = Date.now();
+  const groups = groupIndex();
   return Object.keys(v.secrets).map(id => {
     const s = v.secrets[id];
-    return {
+    return Object.assign(groupFields(s, groups), {
       name: s.name, kind: s.kind, hint: s.hint, length: s.length, note: s.note || null,
       createdBy: s.createdBy || null,
       policy: s.policy, isFile: !!s.isFile, mcp: !!s.mcp,
@@ -1194,7 +1374,7 @@ function listFast() {
         ? Math.max(0, Math.min(1, (s.expiresAt - now) / (s.expiresAt - s.createdAt)))
         : null,
       expired: isExpired(s, now)
-    };
+    });
   }).sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -1234,6 +1414,20 @@ function put(name, value, opts) {
   // was made. Writing a new one makes it obsolete, and approving it afterwards
   // would overwrite what the user just put in with something older.
   if (v.replace && v.replace[n]) delete v.replace[n];
+  // Same reasoning for a pending MCP request: it was shown with this key's
+  // fingerprint, and the value it would expose is about to change.
+  dropMcpRequestsFor(v, [n]);
+  // The group is display metadata, so a replacement keeps it unless the caller
+  // says otherwise. Every replacement path (replaceValue, approveReplace, the
+  // automatic approval in add.js) goes through here, which is what makes the
+  // carry-over impossible to forget.
+  let groupId = null, groupBy = null;
+  if (o.groupId === undefined) {
+    if (existing) { groupId = existing.groupId || null; groupBy = existing.groupBy || null; }
+  } else if (o.groupId) {
+    groupId = String(o.groupId);
+    groupBy = actorOf(o.groupBy !== undefined ? o.groupBy : o.by);
+  }
   const entry = {
     id: existing ? existing.id : crypto.randomUUID(),
     name: n,
@@ -1252,12 +1446,17 @@ function put(name, value, opts) {
     // Detected, never assumed: an explicit choice always wins over the guess.
     pub: o.pub === undefined ? detectPublic(value) : !!o.pub,
     confirm: !!o.confirm,
-    note: o.note || null
+    note: o.note || null,
+    // Outside the AAD and outside the file MAC, like the note: moving a key to
+    // another group must never cost a re-encryption, and a forged group can at
+    // worst display a key under the wrong heading.
+    groupId,
+    groupBy
   };
   // Who authored the value, kept on the entry itself so the key can say it
   // long after the journal has been pruned. On a replacement the field tells
   // who wrote the CURRENT value, which is the question one actually asks.
-  entry.createdBy = o.by === 'claude' || o.by === 'user' ? o.by : null;
+  entry.createdBy = o.by === 'claude' || o.by === 'user' || o.by === 'codex' ? o.by : null;
   entry.kind = detectKind(value);
   entry.hint = hintOf(value);
   entry.length = value.length;
@@ -1266,6 +1465,11 @@ function put(name, value, opts) {
   entry.ct = seal(entry, value);
   v.secrets[entry.id] = entry;
   audit(v, existing ? 'replace' : 'create', n, entry.kind, entry.createdBy);
+  // A key born with MCP access gets the same journal line as a later grant, so
+  // "who opened this key to MCP" has one answer whichever way it happened.
+  if (!existing && entry.mcp) {
+    audit(v, 'mcp', n, entry.mcpServers ? entry.mcpServers.join(',') : 'allowed', entry.createdBy);
+  }
   saveRaw(v, true);
   return { name: n, replaced: !!existing, fingerprint: entry.fingerprint, kind: entry.kind };
 }
@@ -1293,6 +1497,8 @@ function replaceValue(name, value) {
     pub: s.pub,
     confirm: s.confirm,
     note: s.note,
+    groupId: s.groupId || null,
+    groupBy: s.groupBy || null,
     by: 'user'
   });
 }
@@ -1320,6 +1526,11 @@ function rename(oldName, newName) {
   if (v.replace && v.replace[from]) {
     throw fail('a replacement is waiting for {0}: approve or reject it before renaming', from);
   }
+  // An MCP request names keys; the user must answer it about the names it was
+  // shown with, not about a key that quietly changed name in between.
+  if (validMcpRequests(v).some(r => r.names.indexOf(from) !== -1)) {
+    throw fail('an MCP access request is waiting for {0}: approve or refuse it before renaming', from);
+  }
 
   const value = open(s);
   s.name = to;
@@ -1341,6 +1552,7 @@ function remove(name) {
   // authorisations, and the binned entry would then be unrestorable because
   // the name is taken again.
   if (v.replace && v.replace[s.name]) delete v.replace[s.name];
+  dropMcpRequestsFor(v, [s.name]);
   delete v.secrets[s.id];
   audit(v, 'delete', s.name, null, 'user');
   saveRaw(v, true);
@@ -1367,21 +1579,45 @@ function setTtl(name, expiresAt, maxUses) {
 // servers: undefined or [] means every MCP server, a non-empty list restricts
 // the grant to those names. Blanket authorisation was the only option until
 // now, so a key needed by one server was exposed to all of them.
-function setMcp(name, allowed, servers) {
-  const v = loadRaw();
-  const s = findByName(v, name);
-  if (!s) throw fail('unknown key: {0}', name);
+// `by` says who changed it: the panel passes nothing ('user'), the bridge and
+// the MCP server pass 'claude' or 'codex' once decideGrant() has said yes.
+function setMcp(name, allowed, servers, by) {
+  setMcpMany([{ name, allowed, servers }], by);
+  return !!allowed;
+}
+
+function applyMcp(v, s, allowed, servers, by) {
   const list = Array.isArray(servers)
-    ? servers.map(x => String(x)).filter(Boolean).slice(0, 32)
+    ? Array.from(new Set(servers.map(x => String(x)).filter(Boolean))).slice(0, 32)
     : [];
   const value = open(s);
   s.mcp = !!allowed;
   s.mcpServers = (allowed && list.length) ? list : null;
   s.ct = seal(s, value);
   audit(v, 'mcp', s.name,
-    allowed ? (s.mcpServers ? s.mcpServers.join(',') : 'allowed') : 'removed', 'user');
+    allowed ? (s.mcpServers ? s.mcpServers.join(',') : 'allowed') : 'removed', actorOf(by) || 'user');
+}
+
+// Several keys in one go, all or nothing: every entry is opened BEFORE any is
+// re-sealed, so a key that fails to decrypt aborts the batch with nothing
+// written, and the whole change costs one structural save instead of one per key.
+function setMcpMany(changes, by) {
+  const list = Array.isArray(changes) ? changes : [];
+  if (!list.length) return [];
+  const v = loadRaw();
+  const targets = list.map(c => {
+    const s = findByName(v, c.name);
+    if (!s) {
+      const e = fail('unknown key: {0}', c.name);
+      e.suggestions = suggest(c.name, Object.keys(v.secrets).map(id => v.secrets[id].name));
+      throw e;
+    }
+    open(s);                         // throws on a tampered entry, before anything moves
+    return { s, c };
+  });
+  for (const t of targets) applyMcp(v, t.s, !!t.c.allowed, t.c.servers, by);
   saveRaw(v, true);
-  return !!allowed;
+  return targets.map(t => ({ name: t.s.name, mcp: !!t.s.mcp, mcpServers: t.s.mcpServers || null }));
 }
 
 // The flag sits in the AAD, so changing it re-seals the entry — the same price
@@ -1429,13 +1665,19 @@ function revokeAll(confirm) {
   // put back a key that no longer opens anything.
   try { fs.unlinkSync(RECOVERY_PATH); } catch (e) { /* none set up */ }
   try { fs.unlinkSync(TRASH_PATH); } catch (e) { /* nothing binned */ }
+  // Pending MCP requests live inside the vault file just deleted; the layout
+  // only names groups and stays, since it holds nothing sealed.
   // The export file itself is left where it is: it may sit on a drive that is
   // not plugged in, and deleting a file the user put somewhere on purpose is
   // not this function's job. It stops being refreshed, and stops opening.
   try { exportForget(); } catch (e) { /* no policy file */ }
+  // Read under the old key, signed again under the new one (see resignPolicy).
+  let keptPolicy = null;
+  try { if (readPolicyFile()) keptPolicy = policy(); } catch (e) { /* safe defaults */ }
   const seq = currentSeq() + 1;
   _master = crypto.randomBytes(32);
   storeKey(_master, seq);
+  if (readPolicyFile()) { try { resignPolicy(keptPolicy); } catch (e) { /* safe defaults */ } }
   const v = emptyVault();
   v.seq = seq;
   audit(v, 'revoke-all', null, String(n), 'user');
@@ -1446,45 +1688,58 @@ function revokeAll(confirm) {
 }
 
 // Internal consumption, the ONLY path that returns a plaintext value.
+// The write lock is taken twice, around each read-modify-write, and never
+// across the confirmation: that wait lasts up to a minute, and holding the lock
+// through it would shut every other process out of the vault meanwhile.
 function consume(name, who) {
   sweep();
-  let v = loadRaw();
-  let s = findByName(v, name);
-  if (!s) {
-    const names = Object.keys(v.secrets).map(id => v.secrets[id].name);
-    const e = fail('unknown key: {0}', name);
-    e.suggestions = suggest(name, names);
-    throw e;
-  }
-  if (isExpired(s)) {
-    delete v.secrets[s.id];
-    audit(v, 'expire', s.name, null);
-    saveRaw(v, true);
-    throw fail('expired key: {0}', s.name);
-  }
-  // Asked BEFORE the counter moves and before anything is decrypted: a refused
-  // use must leave no trace beyond the log line.
-  if (s.confirm) {
-    const granted = askUse(s.name, who);
-    // Up to a minute has passed inside that call, and the vault is a file other
-    // processes write to. Everything read before it is stale, so it is read again
-    // rather than written back over whatever happened meanwhile.
-    v = loadRaw();
-    s = findByName(v, name);
-    if (!granted) {
-      if (s) {
-        audit(v, 'use-refused', s.name, who || null, 'user');
-        saveRaw(v, false);
-      }
-      throw fail('{0} needs your confirmation for every use, and it was not given', name);
+  const first = withVaultLock(() => {
+    const v = loadRaw();
+    const s = findByName(v, name);
+    if (!s) {
+      const names = Object.keys(v.secrets).map(id => v.secrets[id].name);
+      const e = fail('unknown key: {0}', name);
+      e.suggestions = suggest(name, names);
+      throw e;
     }
-    if (!s) throw fail('unknown key: {0}', name);
     if (isExpired(s)) {
       delete v.secrets[s.id];
       audit(v, 'expire', s.name, null);
       saveRaw(v, true);
       throw fail('expired key: {0}', s.name);
     }
+    return { name: s.name, confirm: !!s.confirm };
+  });
+  // Asked BEFORE the counter moves and before anything is decrypted: a refused
+  // use must leave no trace beyond the log line.
+  const granted = first.confirm ? askUse(first.name, who) : true;
+  return withVaultLock(() => consumeLocked(name, who, first.confirm, granted));
+}
+
+function consumeLocked(name, who, asked, granted) {
+  // Read again in every case: up to a minute may have passed inside askUse(),
+  // and the vault is a file other processes write to. Everything read before
+  // is stale, so nothing of it is written back over what happened meanwhile.
+  const v = loadRaw();
+  const s = findByName(v, name);
+  if (asked && !granted) {
+    if (s) {
+      audit(v, 'use-refused', s.name, who || null, 'user');
+      saveRaw(v, false);
+    }
+    throw fail('{0} needs your confirmation for every use, and it was not given', name);
+  }
+  if (!s) throw fail('unknown key: {0}', name);
+  // Switched to "confirm every use" between the two reads: nobody was asked,
+  // so the use is refused rather than let through.
+  if (s.confirm && !asked) {
+    throw fail('{0} needs your confirmation for every use, and it was not given', name);
+  }
+  if (isExpired(s)) {
+    delete v.secrets[s.id];
+    audit(v, 'expire', s.name, null);
+    saveRaw(v, true);
+    throw fail('expired key: {0}', s.name);
   }
   const value = open(s);
   s.uses = (s.uses || 0) + 1;
@@ -1738,6 +1993,11 @@ function requestReplace(name, value, note) {
   if (!findByName(v, n)) throw fail('unknown key: {0}', n);
   pruneReplacements(v);
   if (!v.replace) v.replace = {};
+  // One proposal per key. Silently swapping the value of a request the user
+  // may be reading right now would let them approve something they never saw.
+  if (v.replace[n]) {
+    throw fail('a replacement is already waiting for {0}: wait for the user to answer it', n);
+  }
 
   // A fresh id, so the seal of the pending value is bound to this request and
   // not to the entry it is meant to succeed.
@@ -1761,18 +2021,31 @@ function pendingReplacements() {
   try {
     const v = loadRaw();
     pruneReplacements(v);
-    return Object.keys(v.replace || {}).map(n => ({
-      name: n, kind: v.replace[n].kind, length: v.replace[n].length,
-      note: v.replace[n].note || null, at: v.replace[n].at
-    }));
+    return Object.keys(v.replace || {}).map(n => {
+      // What the new value would inherit, so the dialog can say "this key is
+      // open to MCP" before the user lets someone else's value through.
+      const cur = findByName(v, n) || {};
+      return {
+        name: n, kind: v.replace[n].kind, length: v.replace[n].length,
+        note: v.replace[n].note || null, at: v.replace[n].at,
+        mcp: !!cur.mcp, mcpServers: (cur.mcpServers && cur.mcpServers.length) ? cur.mcpServers.slice() : null
+      };
+    });
   } catch (e) { return []; }
 }
 
-function approveReplace(name) {
+// `at` is the timestamp the dialog showed: a request replaced in between (the
+// AI cannot do that any more, but an older bridge could) is refused rather than
+// approved blind. opts.dropMcp lets the user accept the value but not the access.
+function approveReplace(name, at, opts) {
+  const o = opts || {};
   const n = String(name || '').toUpperCase();
   const v = loadRaw();
   const p = v.replace && v.replace[n];
   if (!p) throw fail('no pending replacement for {0}', n);
+  if (at !== undefined && at !== null && Number(at) !== Number(p.at)) {
+    throw fail('the request changed after it was shown: nothing was applied');
+  }
   const value = open(p);
 
   // The replacement inherits the lifetime and the authorizations of the key it
@@ -1788,18 +2061,27 @@ function approveReplace(name) {
   // which put() would re-derive from the new value and so overwrite a choice
   // the user made explicitly.
   const cur = findByName(v, n);
-  const opts = cur ? {
+  // Laundering guard: a value that already lives under ANOTHER name would
+  // otherwise inherit this key's MCP access, and a key the user never opened to
+  // MCP would reach a tool call under a borrowed name. The value goes in, the
+  // access does not.
+  const owner = fingerprintOwner(v, fingerprint(value), n);
+  const dropMcp = !!o.dropMcp || !!owner;
+  const putOpts = cur ? {
     policy: cur.policy, expiresAt: cur.expiresAt,
-    maxUses: cur.maxUses, mcp: cur.mcp, mcpServers: cur.mcpServers, pub: cur.pub,
+    maxUses: cur.maxUses,
+    mcp: dropMcp ? false : cur.mcp, mcpServers: dropMcp ? null : cur.mcpServers,
+    pub: cur.pub,
     confirm: cur.confirm,
-    note: p.note || cur.note, by: 'claude'
+    note: p.note || cur.note, by: 'claude',
+    groupId: cur.groupId || null, groupBy: cur.groupBy || null
   } : { note: p.note, by: 'claude' };
 
   delete v.replace[n];
   audit(v, 'replace-approved', n, null, 'user');
   saveRaw(v, false);
-  const r = put(n, value, opts);
-  return { name: n, kind: r.kind };
+  const r = put(n, value, putOpts);
+  return { name: n, kind: r.kind, mcpDropped: !!(cur && cur.mcp && dropMcp), sameValueAs: owner ? owner.name : null };
 }
 
 function rejectReplace(name) {
@@ -1901,27 +2183,236 @@ function setConfirm(name, on) {
 // the vault directory, so the guard already puts it out of reach of a shell:
 // Claude cannot grant itself the permission it is being denied.
 const POLICY_PATH = path.join(VAULT_DIR, 'policy.json');
+const POLICY_INFO = 'claude-vault-policy-v1';
+const MCP_MODES = ['off', 'ask', 'auto'];
+const AIS = ['claude', 'codex'];
 
-function policy() {
+// The decision fields are signed. A shell cannot reach this file through the
+// guard, but "cannot reach" is one layer; the MAC is the second: a policy.json
+// edited by hand to switch MCP to automatic simply stops being believed.
+// The export fields stay outside the signature on purpose: they say where a
+// backup goes, they decide nothing about what an assistant may do.
+const POLICY_SAFE = { autoApprove: false, mcpByAI: 'ask', layoutByAI: true };
+const POLICY_LOCKED = { autoApprove: false, mcpByAI: 'off', layoutByAI: false };
+
+function readPolicyFile() {
   try {
     const p = JSON.parse(fs.readFileSync(POLICY_PATH, 'utf8'));
-    return {
-      autoApprove: !!(p && p.autoApprove),
-      exportPath: (p && typeof p.exportPath === 'string') ? p.exportPath : null,
-      exportAt: (p && Number(p.exportAt)) || null
-    };
-  } catch (e) { return { autoApprove: false, exportPath: null, exportAt: null }; }
+    return p && typeof p === 'object' ? p : null;
+  } catch (e) { return null; }
 }
 
-function setPolicy(o) {
+function cleanOverride(o) {
+  const out = {};
+  if (!o || typeof o !== 'object') return out;
+  if (MCP_MODES.indexOf(o.mcpByAI) !== -1) out.mcpByAI = o.mcpByAI;
+  if (typeof o.layoutByAI === 'boolean') out.layoutByAI = o.layoutByAI;
+  if (typeof o.autoApprove === 'boolean') out.autoApprove = o.autoApprove;
+  return out;
+}
+
+function cleanPerAI(p) {
+  const out = {};
+  if (!p || typeof p !== 'object') return out;
+  for (const ai of AIS) {
+    const o = cleanOverride(p[ai]);
+    if (Object.keys(o).length) out[ai] = o;
+  }
+  return out;
+}
+
+// Canonical form: fixed order, cleaned values, so that the same decision always
+// signs to the same bytes whatever order the file happens to hold its keys in.
+function policyCanon(d) {
+  const per = cleanPerAI(d.perAI);
+  return JSON.stringify([
+    !!d.autoApprove, d.mcpByAI, !!d.layoutByAI,
+    AIS.map(ai => {
+      const o = per[ai] || {};
+      return [ai, o.autoApprove === undefined ? null : o.autoApprove,
+        o.mcpByAI === undefined ? null : o.mcpByAI,
+        o.layoutByAI === undefined ? null : o.layoutByAI];
+    })
+  ]);
+}
+
+function policyMac(d) {
+  return crypto.createHmac('sha256', derive(POLICY_INFO, Buffer.alloc(0), 32))
+    .update(policyCanon(d)).digest('base64');
+}
+
+function exportFields(p) {
+  return {
+    exportPath: (p && typeof p.exportPath === 'string' && p.exportPath) ? p.exportPath : null,
+    exportAt: (p && Number(p.exportAt)) || null
+  };
+}
+
+// Verified read. Three cases, each with its own answer:
+//  - no signature at all: a file written before signatures existed. Its
+//    decisions are not trusted, they fall back to the safe defaults, and the
+//    export location (which decides nothing) is kept;
+//  - a signature that does not match: someone edited the decisions. Everything
+//    the AI could do is switched off and `tampered` says why;
+//  - a signature that matches: the file is believed.
+// No master key on disk means nothing could ever have been signed here, and
+// creating one just to read a setting is out of the question on a render path.
+// Two more cases lock instead of falling back, since a fallback to the safe
+// defaults would turn an "off" the user chose into "ask":
+//  - a policy was signed here before (the key file says so) and the file is
+//    now missing, unreadable or unsigned;
+//  - an unsigned file carrying decisions that only exist since signatures do.
+function unsignedIsTampered(p) {
+  if (policyMarker()) return true;
+  return !!p && ('mcpByAI' in p || 'layoutByAI' in p || 'perAI' in p);
+}
+
+function policy() {
+  const p = readPolicyFile();
+  const exp = exportFields(p);
+  const base = Object.assign({}, POLICY_SAFE, { perAI: {}, tampered: false }, exp);
+  if (!fs.existsSync(KEY_PATH)) return base;
+  if (!p || !p.mac) {
+    return unsignedIsTampered(p)
+      ? Object.assign({}, POLICY_LOCKED, { perAI: {}, tampered: true }, exp)
+      : base;
+  }
+  const d = {
+    autoApprove: !!p.autoApprove,
+    mcpByAI: MCP_MODES.indexOf(p.mcpByAI) !== -1 ? p.mcpByAI : 'ask',
+    layoutByAI: typeof p.layoutByAI === 'boolean' ? p.layoutByAI : true,
+    perAI: cleanPerAI(p.perAI)
+  };
+  let good = false;
+  try { good = equalCT(String(p.mac), policyMac(d)); } catch (e) { return base; }
+  if (!good) return Object.assign({}, POLICY_LOCKED, { perAI: {}, tampered: true }, exp);
+  return Object.assign({}, d, { tampered: false }, exp);
+}
+
+// The effective rules for one assistant: its override where it has one, the
+// shared setting otherwise.
+function policyFor(ai) {
+  const p = policy();
+  const o = (p.perAI && p.perAI[ai]) || {};
+  return {
+    autoApprove: o.autoApprove !== undefined ? o.autoApprove : p.autoApprove,
+    mcpByAI: o.mcpByAI !== undefined ? o.mcpByAI : p.mcpByAI,
+    layoutByAI: o.layoutByAI !== undefined ? o.layoutByAI : p.layoutByAI,
+    tampered: !!p.tampered
+  };
+}
+
+// UNVERIFIED, for display only (the panel line, the SessionStart text). Never
+// touches the master key, so it costs nothing on a hot path; nothing that
+// decides anything may read it.
+function policyFast(ai) {
+  const raw = readPolicyFile();
+  const p = raw || {};
+  const top = {
+    mcpByAI: MCP_MODES.indexOf(p.mcpByAI) !== -1 ? p.mcpByAI : 'ask',
+    layoutByAI: typeof p.layoutByAI === 'boolean' ? p.layoutByAI : true
+  };
+  // Same reading as policy(), so the panel line never shows "ask" where the
+  // verified read has locked everything.
+  if (!p.mac) {
+    return fs.existsSync(KEY_PATH) && unsignedIsTampered(raw)
+      ? { mcpByAI: POLICY_LOCKED.mcpByAI, layoutByAI: POLICY_LOCKED.layoutByAI }
+      : { mcpByAI: 'ask', layoutByAI: true };
+  }
+  const o = (ai && cleanPerAI(p.perAI)[ai]) || {};
+  return {
+    mcpByAI: o.mcpByAI !== undefined ? o.mcpByAI : top.mcpByAI,
+    layoutByAI: o.layoutByAI !== undefined ? o.layoutByAI : top.layoutByAI
+  };
+}
+
+// MERGES what it is given into the current policy and signs the result. It
+// used to rebuild the file from its argument alone, so a caller that only
+// meant to switch auto approval off also erased the backup location.
+// An invalid value keeps the current one; an explicit null on an export field
+// clears it (exportForget); perAI[ai] = null removes that override.
+function setPolicy(patch) {
+  const o = patch || {};
+  const cur = policy();
+  const next = {
+    autoApprove: cur.autoApprove, mcpByAI: cur.mcpByAI, layoutByAI: cur.layoutByAI,
+    perAI: JSON.parse(JSON.stringify(cur.perAI || {}))
+  };
+  if (typeof o.autoApprove === 'boolean') next.autoApprove = o.autoApprove;
+  if (MCP_MODES.indexOf(o.mcpByAI) !== -1) next.mcpByAI = o.mcpByAI;
+  if (typeof o.layoutByAI === 'boolean') next.layoutByAI = o.layoutByAI;
+  if (o.perAI && typeof o.perAI === 'object') {
+    for (const ai of AIS) {
+      if (!(ai in o.perAI)) continue;
+      const given = o.perAI[ai];
+      if (given === null) { delete next.perAI[ai]; continue; }
+      if (!given || typeof given !== 'object') continue;
+      const merged = Object.assign({}, next.perAI[ai] || {});
+      for (const k of ['autoApprove', 'mcpByAI', 'layoutByAI']) {
+        if (given[k] === null) delete merged[k];
+      }
+      Object.assign(merged, cleanOverride(given));
+      if (Object.keys(merged).length) next.perAI[ai] = merged; else delete next.perAI[ai];
+    }
+  }
+  const exp = { exportPath: cur.exportPath, exportAt: cur.exportAt };
+  if ('exportPath' in o) exp.exportPath = (typeof o.exportPath === 'string' && o.exportPath) ? o.exportPath : null;
+  if ('exportAt' in o) exp.exportAt = Number(o.exportAt) || null;
   ensureDirs();
-  writeAtomic(POLICY_PATH, JSON.stringify({
-    autoApprove: !!(o && o.autoApprove),
-    exportPath: (o && typeof o.exportPath === 'string' && o.exportPath) ? o.exportPath : null,
-    exportAt: (o && Number(o.exportAt)) || null,
-    at: Date.now()
-  }));
+  next.perAI = cleanPerAI(next.perAI);
+  writeAtomic(POLICY_PATH, JSON.stringify(Object.assign({}, next, exp, {
+    at: Date.now(), mac: policyMac(next)
+  })));
+  // After the file, never before: a marker without a signed file beside it
+  // would lock every AI permission for nothing.
+  markPolicySigned();
+  // The settings travel in the export, so the export follows them.
+  if (exp.exportPath) { try { exportRefresh(); } catch (e) { /* reported by the panel */ } }
   return policy();
+}
+
+// The master key changes in two places (revocation, import with a phrase), and
+// a policy signed under the old one would read as tampered afterwards: every
+// AI permission would switch off for a reason the user cannot see. The caller
+// reads the decisions while the old key still verifies them, and they are
+// signed again under the new one.
+function resignPolicy(d) {
+  if (!d || d.tampered) d = Object.assign({}, POLICY_SAFE, { perAI: {} });
+  const next = {
+    autoApprove: !!d.autoApprove,
+    mcpByAI: MCP_MODES.indexOf(d.mcpByAI) !== -1 ? d.mcpByAI : 'ask',
+    layoutByAI: typeof d.layoutByAI === 'boolean' ? d.layoutByAI : true,
+    perAI: cleanPerAI(d.perAI)
+  };
+  const exp = exportFields(readPolicyFile());
+  ensureDirs();
+  writeAtomic(POLICY_PATH, JSON.stringify(Object.assign({}, next, exp, {
+    at: Date.now(), mac: policyMac(next)
+  })));
+  markPolicySigned();
+}
+
+// A file written by 1.1, where automatic replacement approval was on. Its
+// decisions are unsigned, so they are not believed, and re-signing them on
+// our own would turn a file anyone could have written into a real permission.
+// The extension asks the user once instead; either answer signs the file, so
+// the question never comes back.
+function legacyAutoApprove() {
+  const p = readPolicyFile();
+  if (!p || p.mac || p.autoApprove !== true) return false;
+  if ('mcpByAI' in p || 'layoutByAI' in p || 'perAI' in p) return false;
+  return !policyMarker();
+}
+
+// Export bookkeeping only. Kept off the signed path on purpose: it runs after
+// every structural save, and the location of a backup decides nothing.
+function setExportFields(fields) {
+  const p = readPolicyFile() || {};
+  const exp = exportFields(p);
+  if ('exportPath' in fields) exp.exportPath = fields.exportPath || null;
+  if ('exportAt' in fields) exp.exportAt = Number(fields.exportAt) || null;
+  ensureDirs();
+  writeAtomic(POLICY_PATH, JSON.stringify(Object.assign({}, p, exp, { at: Date.now() })));
 }
 
 // Defaults for a new key. They lived in VS Code's own state, which the export
@@ -1965,6 +2456,1002 @@ function uiLang() {
 function setUiLang(code) {
   ensureDirs();
   writeAtomic(UILANG_PATH, JSON.stringify({ lang: String(code || 'en'), at: Date.now() }));
+}
+
+// ------------------------------------------------------------ groups and layout
+//
+// Folders in a sidebar, nothing more. Groups and separators are objects of
+// their own, ordered, and they exist empty as well as filled. A key points to
+// its group by id (entry.groupId), so renaming a group touches one line of the
+// layout and no key at all.
+//
+// The layout is display, not security: it lives beside the vault in its own
+// unsigned file, and the worst a forged one can do is show a key under the
+// wrong heading. Every change is still journaled with its author, because a
+// list that reorganises itself with nobody to blame is a list nobody trusts.
+
+const LAYOUT_PATH = path.join(VAULT_DIR, 'layout.json');
+const GROUP_MAX = 40;
+const SEP_MAX = 60;
+const LAYOUT_MAX = 500;
+
+function actorOf(by) {
+  return by === 'user' || by === 'claude' || by === 'codex' ? by : null;
+}
+
+function isAI(by) { return by === 'claude' || by === 'codex'; }
+
+// Letters, digits, space and . _ & + - only. Anything else is dropped rather
+// than refused, the same forgiving rule as key names.
+function normalizeGroupName(s) {
+  if (s == null) return null;
+  const kept = Array.from(String(s).replace(/\s+/g, ' '))
+    .filter(ch => /[\p{L}\p{N} ._&+-]/u.test(ch)).join('');
+  const n = kept.replace(/ {2,}/g, ' ').trim().slice(0, GROUP_MAX).trim();
+  return n || null;
+}
+
+function cleanLabel(s) {
+  if (s == null) return null;
+  const n = String(s).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ')
+    .trim().slice(0, SEP_MAX).trim();
+  return n || null;
+}
+
+function cleanItems(items) {
+  if (!Array.isArray(items)) return [];
+  const out = [];
+  const ids = new Set();
+  const names = new Set();
+  for (const it of items) {
+    if (out.length >= LAYOUT_MAX) break;
+    if (!it || typeof it !== 'object' || typeof it.id !== 'string' || !it.id ||
+        it.id.length > 64 || ids.has(it.id)) continue;
+    if (it.type === 'group') {
+      const name = normalizeGroupName(it.name);
+      if (!name || names.has(name.toLowerCase())) continue;
+      names.add(name.toLowerCase());
+      ids.add(it.id);
+      out.push({ type: 'group', id: it.id, name, collapsed: !!it.collapsed });
+    } else if (it.type === 'separator') {
+      ids.add(it.id);
+      out.push({ type: 'separator', id: it.id, label: cleanLabel(it.label) });
+    }
+  }
+  return out;
+}
+
+function readLayout() {
+  try {
+    const l = JSON.parse(fs.readFileSync(LAYOUT_PATH, 'utf8'));
+    return { v: 1, items: cleanItems(l && l.items), at: Number(l && l.at) || 0 };
+  } catch (e) { return { v: 1, items: [], at: 0 }; }
+}
+
+function writeLayout(items) {
+  const clean = cleanItems(items);
+  writeAtomic(LAYOUT_PATH, JSON.stringify({ v: 1, items: clean, at: Date.now() }));
+  return clean;
+}
+
+function layout() {
+  return readLayout().items.map(i => Object.assign({}, i));
+}
+
+function groupIndex() {
+  const m = new Map();
+  for (const i of readLayout().items) if (i.type === 'group') m.set(i.id, i.name);
+  return m;
+}
+
+// A groupId pointing to a deleted group counts as ungrouped, everywhere.
+function groupFields(s, idx) {
+  const name = s && s.groupId ? idx.get(s.groupId) : null;
+  return {
+    groupId: name ? s.groupId : null,
+    groupBy: name ? (s.groupBy || null) : null,
+    group: name || null
+  };
+}
+
+function findGroup(nameOrId) {
+  if (nameOrId == null) return null;
+  const items = readLayout().items;
+  const raw = String(nameOrId);
+  const byId = items.find(i => i.type === 'group' && i.id === raw);
+  if (byId) return Object.assign({}, byId);
+  const n = normalizeGroupName(raw);
+  if (!n) return null;
+  const hit = items.find(i => i.type === 'group' && i.name.toLowerCase() === n.toLowerCase());
+  return hit ? Object.assign({}, hit) : null;
+}
+
+// A group by name or id, a separator by id or by its label when that label is
+// unique, or any item by its position written "@3" (counted from 1 at the top,
+// as list.js --groups prints it). The position is what makes a plain separator,
+// or one of two separators with the same label, addressable at all.
+const POSITION_RE = /^@(\d{1,4})$/;
+
+function findItem(nameOrId) {
+  const raw = String(nameOrId == null ? '' : nameOrId).trim();
+  const items = readLayout().items;
+  const pos = POSITION_RE.exec(raw);
+  if (pos) {
+    const it = items[Number(pos[1]) - 1];
+    return it ? Object.assign({}, it) : null;
+  }
+  const g = findGroup(nameOrId);
+  if (g) return g;
+  const byId = items.find(i => i.id === raw);
+  if (byId) return Object.assign({}, byId);
+  const lab = cleanLabel(raw);
+  if (!lab) return null;
+  const hits = items.filter(i => i.type === 'separator' && i.label && i.label.toLowerCase() === lab.toLowerCase());
+  return hits.length === 1 ? Object.assign({}, hits[0]) : null;
+}
+
+// The user's "the AI may not reorganise my keys" switch, enforced HERE rather
+// than in each script, so the bridge and the MCP server cannot drift apart.
+function layoutGate(by) {
+  if (isAI(by) && !policyFor(by).layoutByAI) {
+    throw fail('the user does not let the AI reorganise the keys: ask them to do it in the Claude Vault view');
+  }
+}
+
+function clampIndex(at, len) {
+  if (at === undefined || at === null || at === '' || !isFinite(Number(at))) return len;
+  return Math.max(0, Math.min(len, Math.trunc(Number(at))));
+}
+
+// The layout is part of the export, so a change made here should reach the
+// backup like any key change does. Never allowed to fail the change itself.
+function refreshAfterLayout() {
+  try { exportRefresh(); } catch (e) { /* reported by the panel */ }
+}
+
+// Order of operations matters: the vault is read FIRST, so an unreadable vault
+// stops the change before the layout file moves, and the journal line is never
+// missing for a change that happened.
+function commitLayout(items, event, name, detail, by) {
+  const v = loadRaw();
+  const clean = writeLayout(items);
+  audit(v, event, name, detail, actorOf(by) || 'user');
+  saveRaw(v, false);
+  refreshAfterLayout();
+  return clean;
+}
+
+// "none" is how the journal used to say "out of any group", and older entries
+// still say it that way: a group of that name would read as an ungrouping.
+function refuseReservedGroup(n) {
+  if (n.toLowerCase() === 'none') throw fail('invalid group name: {0} is reserved', n);
+}
+
+function createGroup(name, at, by) {
+  layoutGate(by);
+  const n = normalizeGroupName(name);
+  if (!n) throw fail('invalid group name: use letters, digits, spaces and . _ & + - (40 characters at most)');
+  refuseReservedGroup(n);
+  const items = readLayout().items;
+  if (items.some(i => i.type === 'group' && i.name.toLowerCase() === n.toLowerCase())) {
+    throw fail('a group named {0} already exists', n);
+  }
+  if (items.length >= LAYOUT_MAX) throw fail('too many groups and separators');
+  const item = { type: 'group', id: crypto.randomUUID(), name: n, collapsed: false };
+  items.splice(clampIndex(at, items.length), 0, item);
+  commitLayout(items, 'group-create', n, null, by);
+  return Object.assign({}, item);
+}
+
+function renameGroup(nameOrId, newName, by) {
+  layoutGate(by);
+  const g = findGroup(nameOrId);
+  if (!g) throw fail('unknown group: {0}', String(nameOrId));
+  const n = normalizeGroupName(newName);
+  if (!n) throw fail('invalid group name: use letters, digits, spaces and . _ & + - (40 characters at most)');
+  refuseReservedGroup(n);
+  const items = readLayout().items;
+  if (items.some(i => i.type === 'group' && i.id !== g.id && i.name.toLowerCase() === n.toLowerCase())) {
+    throw fail('a group named {0} already exists', n);
+  }
+  if (n === g.name) return { id: g.id, name: n, from: g.name, unchanged: true };
+  for (const i of items) if (i.id === g.id) i.name = n;
+  commitLayout(items, 'group-rename', n, g.name, by);
+  return { id: g.id, name: n, from: g.name };
+}
+
+// Its keys become ungrouped, never deleted: a group is a heading, and taking a
+// heading away must not take anything under it.
+function deleteGroup(nameOrId, by) {
+  layoutGate(by);
+  const g = findGroup(nameOrId);
+  if (!g) throw fail('unknown group: {0}', String(nameOrId));
+  const v = loadRaw();
+  let n = 0;
+  for (const id of Object.keys(v.secrets)) {
+    const s = v.secrets[id];
+    if (s.groupId === g.id) { s.groupId = null; s.groupBy = null; n++; }
+  }
+  writeLayout(readLayout().items.filter(i => i.id !== g.id));
+  audit(v, 'group-delete', g.name, String(n), actorOf(by) || 'user');
+  saveRaw(v, false);
+  refreshAfterLayout();
+  return { name: g.name, keys: n };
+}
+
+function addSeparator(label, at, by) {
+  layoutGate(by);
+  const items = readLayout().items;
+  if (items.length >= LAYOUT_MAX) throw fail('too many groups and separators');
+  const item = { type: 'separator', id: crypto.randomUUID(), label: cleanLabel(label) };
+  items.splice(clampIndex(at, items.length), 0, item);
+  commitLayout(items, 'separator-add', null, item.label, by);
+  return Object.assign({}, item);
+}
+
+function findSeparator(idOrLabel) {
+  const it = findItem(idOrLabel);
+  return it && it.type === 'separator' ? it : null;
+}
+
+function editSeparator(id, label, by) {
+  layoutGate(by);
+  const sep = findSeparator(id);
+  if (!sep) throw fail('unknown separator: {0}', String(id));
+  const lab = cleanLabel(label);
+  const items = readLayout().items;
+  for (const i of items) if (i.id === sep.id) i.label = lab;
+  commitLayout(items, 'separator-edit', null, lab, by);
+  return { id: sep.id, label: lab };
+}
+
+function removeSeparator(id, by) {
+  layoutGate(by);
+  const sep = findSeparator(id);
+  if (!sep) throw fail('unknown separator: {0}', String(id));
+  commitLayout(readLayout().items.filter(i => i.id !== sep.id), 'separator-remove', null, sep.label, by);
+  return { id: sep.id, label: sep.label };
+}
+
+// toIndex counts groups and separators from 0, after the item has been taken
+// out: moving to 0 puts it at the top, to the length (or beyond) at the end.
+function moveItem(nameOrId, toIndex, by) {
+  layoutGate(by);
+  const it = findItem(nameOrId);
+  if (!it) throw fail('unknown group or separator: {0}', String(nameOrId));
+  const items = readLayout().items.filter(i => i.id !== it.id);
+  const at = clampIndex(toIndex, items.length);
+  const cur = readLayout().items.findIndex(i => i.id === it.id);
+  if (cur === at) return { id: it.id, index: at, unchanged: true };
+  items.splice(at, 0, readLayout().items.find(i => i.id === it.id));
+  commitLayout(items, 'layout-move',
+    it.type === 'group' ? it.name : (it.label || '---'), String(at), by);
+  return { id: it.id, index: at };
+}
+
+// Folding is the user's view of the list, not a decision: no journal line and
+// no backup refresh for every click on a header.
+function setCollapsed(nameOrId, collapsed) {
+  const g = findGroup(nameOrId);
+  if (!g) throw fail('unknown group: {0}', String(nameOrId));
+  const items = readLayout().items;
+  for (const i of items) if (i.id === g.id) i.collapsed = !!collapsed;
+  writeLayout(items);
+  return !!collapsed;
+}
+
+function setAllCollapsed(collapsed) {
+  const items = readLayout().items;
+  for (const i of items) if (i.type === 'group') i.collapsed = !!collapsed;
+  writeLayout(items);
+  return items.filter(i => i.type === 'group').length;
+}
+
+// Places keys in a group (or takes them out with null). Every key is checked
+// before anything moves, so a typo in the fifth name leaves the first four
+// where they were. opts.create builds a missing group on the fly, which is
+// itself a journaled layout change.
+function setKeyGroup(names, target, by, opts) {
+  const o = opts || {};
+  layoutGate(by);
+  const list = Array.from(new Set((Array.isArray(names) ? names : [names])
+    .map(x => normalizeName(x)).filter(Boolean)));
+  if (!list.length) throw fail('name at least one key');
+  let v = loadRaw();
+  for (const n of list) {
+    if (!findByName(v, n)) {
+      const e = fail('unknown key: {0}', n);
+      e.suggestions = suggest(n, Object.keys(v.secrets).map(id => v.secrets[id].name));
+      throw e;
+    }
+  }
+  let g = null;
+  let created = false;
+  if (target !== null && target !== undefined && target !== '') {
+    g = findGroup(target);
+    if (!g) {
+      if (!o.create) throw fail('unknown group: {0}', String(target));
+      g = createGroup(target, undefined, by);
+      created = true;
+      v = loadRaw();               // createGroup saved the vault (journal line)
+    }
+  }
+  const who = actorOf(by) || 'user';
+  const done = [];
+  for (const n of list) {
+    const s = findByName(v, n);
+    s.groupId = g ? g.id : null;
+    s.groupBy = g ? who : null;
+    // No detail at all for an ungrouping, so no group name can ever be
+    // mistaken for one (entries written before this say 'none').
+    audit(v, 'group', s.name, g ? g.name : null, who);
+    done.push(s.name);
+  }
+  saveRaw(v, false);
+  refreshAfterLayout();
+  return { group: g ? g.name : null, groupId: g ? g.id : null, names: done, created };
+}
+
+// ------------------------------------------------------- group suggestions
+//
+// Proposals, never applied on their own: the user (or the AI, through set.js)
+// decides. The rules aim at what a person would do by hand: a rotated copy
+// belongs with the key it replaces, BO_DEV_* and BO_PROD_* are two different
+// things even though they share a prefix, and CLOUDLFARE is a typo of
+// CLOUDFLARE, not a third provider.
+
+const ENV_TOKENS = ['DEV', 'PROD', 'PRD', 'STAGING', 'STG', 'PREPROD', 'TEST', 'QA', 'UAT', 'LOCAL', 'SANDBOX'];
+const ROTATION_RE = /_(\d{4})(?:_(\d{2}))?(?:_(\d{2}))?$/;
+
+// KEY_2026_10 -> KEY. Only a plausible date counts: KEY_1234 is a name, not a
+// rotation.
+function stripRotation(name) {
+  const s = String(name || '');
+  const m = ROTATION_RE.exec(s);
+  if (!m) return s;
+  const y = Number(m[1]);
+  if (y < 1990 || y > 2199) return s;
+  if (m[2] && (Number(m[2]) < 1 || Number(m[2]) > 12)) return s;
+  if (m[3] && (Number(m[3]) < 1 || Number(m[3]) > 31)) return s;
+  return s.slice(0, m.index) || s;
+}
+
+// The base name when `name` is a dated copy of a key that still exists.
+function rotationOf(name, names) {
+  const s = String(name || '');
+  const base = stripRotation(s);
+  if (base === s) return null;
+  return (names || []).indexOf(base) !== -1 ? base : null;
+}
+
+// Optimal string alignment distance: a swapped pair of letters counts as one
+// edit, which is the commonest typo of all (CLOUDLFARE).
+function editDistance(a, b) {
+  const d = [];
+  for (let i = 0; i <= a.length; i++) { d[i] = [i]; }
+  for (let j = 0; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return d[a.length][b.length];
+}
+
+function suggestGroups() {
+  const keys = listFast().filter(s => !s.expired && !s.groupId);
+  const buckets = new Map();
+  for (const s of keys) {
+    const tokens = stripRotation(s.name).split('_').filter(Boolean);
+    if (!tokens.length) continue;
+    const prefix = tokens[0];
+    const env = tokens.slice(1).find(t => ENV_TOKENS.indexOf(t) !== -1) || null;
+    const k = prefix + (env ? ' ' + env : '');
+    if (!buckets.has(k)) buckets.set(k, { prefix, env, names: [], typo: [], merged: false });
+    buckets.get(k).names.push(s.name);
+  }
+  // The bigger bucket wins a near spelling: two CLOUDFLARE keys and one
+  // CLOUDLFARE key make one CLOUDFLARE group with the odd one flagged.
+  const arr = Array.from(buckets.values())
+    .sort((a, b) => b.names.length - a.names.length || a.prefix.localeCompare(b.prefix));
+  for (let i = 0; i < arr.length; i++) {
+    const a = arr[i];
+    if (a.merged || a.prefix.length < 6) continue;
+    for (let j = i + 1; j < arr.length; j++) {
+      const b = arr[j];
+      if (b.merged || b.env !== a.env || b.prefix.length < 6 || b.prefix === a.prefix) continue;
+      if (editDistance(a.prefix, b.prefix) !== 1) continue;
+      a.names = a.names.concat(b.names);
+      a.typo = a.typo.concat(b.names);
+      b.merged = true;
+    }
+  }
+  const out = [];
+  for (const b of arr) {
+    if (b.merged || b.names.length < 2) continue;
+    const name = b.prefix + (b.env ? ' ' + b.env : '');
+    const existing = findGroup(name);
+    out.push({
+      group: existing ? existing.name : name,
+      groupId: existing ? existing.id : null,
+      names: b.names.sort(),
+      typo: b.typo.sort()
+    });
+  }
+  return out.sort((x, y) => x.group.localeCompare(y.group));
+}
+
+// ------------------------------------------------------- MCP access by the AI
+//
+// Who may open a key to MCP, and when the user has to be asked. The bridge
+// scripts and the MCP server never decide this themselves: they describe the
+// change and decideGrant() answers, so Claude and ChatGPT live under exactly
+// the same rules.
+
+const VAULT_MCP_SERVER = 'claude-monitor-vault';
+const CLAUDE_JSON_PATH = path.join(os.homedir(), '.claude.json');
+
+function readJsonQuiet(file) {
+  try {
+    let txt = fs.readFileSync(file, 'utf8');
+    if (txt.charCodeAt(0) === 0xFEFF) txt = txt.slice(1);
+    const o = JSON.parse(txt);
+    return o && typeof o === 'object' ? o : null;
+  } catch (e) { return null; }
+}
+
+// Every MCP server Claude Code knows about, with what matters to a grant: how
+// it is reached, and whether a value would travel through the vault proxy
+// (a local process we launched) or through a tool call to somewhere else.
+// `hash` fingerprints the definition so an approval can tell that the server
+// it was shown is still the one it would open the key to. Read only, never
+// throws: a broken config means fewer known servers, not a broken vault.
+function mcpServerInfo(cwd) {
+  const defs = {};
+  const scopes = {};
+  const add = (servers, scope) => {
+    if (!servers || typeof servers !== 'object') return;
+    for (const id of Object.keys(servers)) {
+      const def = servers[id];
+      if (!def || typeof def !== 'object' || !/^[A-Za-z0-9._-]{1,64}$/.test(id)) continue;
+      (defs[id] = defs[id] || []).push(def);
+      (scopes[id] = scopes[id] || []).indexOf(scope) === -1 && scopes[id].push(scope);
+    }
+  };
+  try {
+    const cj = readJsonQuiet(CLAUDE_JSON_PATH);
+    if (cj) {
+      add(cj.mcpServers, 'user');
+      if (cj.projects && typeof cj.projects === 'object') {
+        for (const p of Object.keys(cj.projects)) {
+          if (cj.projects[p]) add(cj.projects[p].mcpServers, 'local');
+        }
+      }
+    }
+    if (cwd) {
+      const pj = readJsonQuiet(path.join(String(cwd), '.mcp.json'));
+      if (pj) add(pj.mcpServers, 'project');
+    }
+  } catch (e) { /* fewer servers known, never an error */ }
+
+  const out = {};
+  for (const id of Object.keys(defs)) {
+    let transport = 'stdio';
+    let wrapped = true;
+    for (const def of defs[id]) {
+      const t = String(def.type || '').toLowerCase();
+      const tr = (t === 'http' || t === 'streamable-http') ? 'http'
+        : t === 'sse' ? 'sse'
+          : (def.url && !def.command) ? 'http' : 'stdio';
+      const args = Array.isArray(def.args) ? def.args.map(String) : [];
+      // Our own vault server never passes a value through a tool call either:
+      // it hands it to a child process environment, inside the same machine.
+      const w = tr === 'stdio' && (args.some(a => /(^|[\\/])mcp-proxy\.js$/i.test(a)) ||
+        (id === VAULT_MCP_SERVER && args.some(a => /(^|[\\/])mcp-server\.js$/i.test(a))));
+      if (tr !== 'stdio') transport = tr;
+      if (!w) wrapped = false;
+    }
+    if (transport !== 'stdio') wrapped = false;
+    const blob = defs[id].map(d => JSON.stringify(d)).sort().join('\n');
+    out[id] = {
+      scope: scopes[id].join(','), transport, wrapped,
+      def: defs[id][0],
+      hash: crypto.createHash('sha256').update(blob).digest('hex').slice(0, 16)
+    };
+  }
+  // ChatGPT reaches keys through this server, which is configured on the Codex
+  // side (its own config file), not in Claude's. Always known, so a grant to it
+  // can be decided; local by construction.
+  if (!out[VAULT_MCP_SERVER]) {
+    out[VAULT_MCP_SERVER] = {
+      scope: 'builtin', transport: 'stdio', wrapped: true, def: null,
+      hash: crypto.createHash('sha256').update('builtin:' + VAULT_MCP_SERVER).digest('hex').slice(0, 16)
+    };
+  }
+  return out;
+}
+
+// "server1, server2" (or an array) -> a clean, deduplicated list. An empty list
+// is an error and NEVER means "every server": a slip of the keyboard must not
+// widen a grant.
+function parseServerList(str) {
+  const parts = (Array.isArray(str) ? str : String(str == null ? '' : str).split(','))
+    .map(s => String(s == null ? '' : s).trim()).filter(Boolean);
+  const out = Array.from(new Set(parts));
+  if (!out.length) throw fail('name at least one server, or use --mcp alone');
+  for (const s of out) {
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(s)) throw fail('invalid MCP server name: {0}', s);
+  }
+  if (out.length > 32) throw fail('32 MCP servers at most');
+  return out;
+}
+
+// True when the new access is no wider than the current one: a removal, the
+// same scope, or a subset of the named servers. Applies without asking.
+function isNarrowing(entry, allowed, servers) {
+  if (!allowed) return true;
+  if (!entry || !entry.mcp) return false;
+  const cur = (entry.mcpServers && entry.mcpServers.length) ? entry.mcpServers : null;
+  const next = (Array.isArray(servers) && servers.length) ? servers : null;
+  if (!cur) return true;
+  if (!next) return false;
+  return next.every(s => cur.indexOf(s) !== -1);
+}
+
+// The whole rule book, in one place, in the order it is applied:
+//   off                         -> refuse
+//   removal / narrowing         -> apply
+//   a named server nobody knows -> refuse (probably a typo; the known ids are listed)
+//   a "confirm every use" key   -> ask
+//   every server, or a server not behind the vault proxy -> ask
+//   ask: at creation -> apply, on an existing key -> ask
+//   auto                        -> apply
+function decideGrant(o) {
+  const a = o || {};
+  const entries = Array.isArray(a.entries) ? a.entries.filter(Boolean) : [];
+  const allow = a.allow === undefined ? true : !!a.allow;
+  const servers = Array.isArray(a.servers) ? a.servers : null;
+  const info = a.info || {};
+  const mode = MCP_MODES.indexOf(a.mode) !== -1 ? a.mode : 'off';
+  if (mode === 'off') {
+    return { action: 'refuse', why: 'the user does not let the AI change MCP access (setting: off)' };
+  }
+  if (!allow) return { action: 'apply', why: 'removing MCP access never needs the user' };
+  if (!a.creation && entries.length && entries.every(e => isNarrowing(e, true, servers))) {
+    return { action: 'apply', why: 'narrowing MCP access never needs the user' };
+  }
+  if (servers) {
+    const unknown = servers.filter(s => !info[s]);
+    if (unknown.length) {
+      return {
+        action: 'refuse',
+        why: 'unknown MCP server: ' + unknown.join(', ') + '. Known servers: ' +
+          (Object.keys(info).sort().join(', ') || 'none')
+      };
+    }
+  }
+  if (entries.some(e => e.confirm)) {
+    return { action: 'request', why: 'a key marked "confirm every use" always needs the user' };
+  }
+  if (!servers) return { action: 'request', why: 'access for every MCP server always needs the user' };
+  const remote = servers.filter(s => !(info[s].transport === 'stdio' && info[s].wrapped));
+  if (remote.length) {
+    return { action: 'request', why: 'not a local server behind the vault proxy: ' + remote.join(', ') };
+  }
+  if (mode === 'ask') {
+    return a.creation
+      ? { action: 'apply', why: 'a new key on named local servers (setting: ask)' }
+      : { action: 'request', why: 'widening access on an existing key asks the user (setting: ask)' };
+  }
+  return { action: 'apply', why: 'automatic MCP setting' };
+}
+
+// Who already holds this value, live or in the bin. Fingerprints only: nothing
+// is decrypted to answer.
+function fingerprintOwner(v, fp, exceptName) {
+  if (!fp) return null;
+  for (const id of Object.keys(v.secrets || {})) {
+    const s = v.secrets[id];
+    if (s.fingerprint === fp && s.name !== exceptName) return { name: s.name, binned: false };
+  }
+  for (const i of readTrash()) {
+    if (i.fingerprint === fp && i.name !== exceptName) return { name: i.name, binned: true };
+  }
+  return null;
+}
+
+// The AI is refused a second name for a value the vault already holds: a copy
+// is a way around the access the user gave (or did not give) to the first one.
+function fingerprintTaken(value, exceptName) {
+  if (typeof value !== 'string' || !value.length) return null;
+  const v = loadRaw();
+  const r = fingerprintOwner(v, fingerprint(value), exceptName ? normalizeName(exceptName) : null);
+  return r ? r.name : null;
+}
+
+// ------------------------------------------------------- MCP access requests
+//
+// When decideGrant() says "ask", the request is parked inside the vault file
+// and the extension shows ONE window: who asks, which keys, which servers, and
+// why. One request at a time, vault-wide, so the user never approves a pile
+// of things at once. Each request carries its own MAC: a request typed into
+// the file by hand is ignored and dropped, it can never reach the dialog.
+//
+// The approval applies exactly what the window showed. If the keys, their
+// values or the server definitions changed in between, nothing is applied.
+
+const MCPREQ_INFO = 'claude-vault-mcpreq-v1';
+const MCPREQ_TTL_MS = 900000;   // 15 min, like a replacement
+const REASON_MAX = 200;
+
+function mcpReqCanon(r) {
+  const srv = r.srv && typeof r.srv === 'object' ? r.srv : {};
+  return JSON.stringify([
+    r.rid, r.names, r.entryIds, r.fps, !!r.allow, r.servers || null, r.reason, r.by, r.at,
+    Object.keys(srv).sort().map(k => [k, srv[k]]), r.cwd || null
+  ]);
+}
+
+function mcpReqMac(r) {
+  return crypto.createHmac('sha256', derive(MCPREQ_INFO, Buffer.alloc(0), 32))
+    .update(mcpReqCanon(r)).digest('base64');
+}
+
+function validMcpRequests(v) {
+  const now = Date.now();
+  const out = [];
+  for (const rid of Object.keys((v && v.mcpReq) || {})) {
+    const r = v.mcpReq[rid];
+    if (!r || r.rid !== rid || !Array.isArray(r.names) || !Array.isArray(r.entryIds) ||
+        !Array.isArray(r.fps) || r.names.length !== r.entryIds.length) continue;
+    if ((Number(r.at) || 0) + MCPREQ_TTL_MS < now) continue;
+    let ok = false;
+    try { ok = equalCT(String(r.mac || ''), mcpReqMac(r)); } catch (e) { ok = false; }
+    if (ok) out.push(r);
+  }
+  return out;
+}
+
+function pruneMcpRequests(v) {
+  if (!v.mcpReq) return;
+  const keep = new Set(validMcpRequests(v).map(r => r.rid));
+  for (const rid of Object.keys(v.mcpReq)) if (!keep.has(rid)) delete v.mcpReq[rid];
+  if (!Object.keys(v.mcpReq).length) delete v.mcpReq;
+}
+
+// A request dropped without an answer leaves a journal line carrying its id,
+// so the script waiting on it learns at once that nothing is waiting any more.
+function withdrawMcpRequest(v, rid) {
+  const r = v.mcpReq && v.mcpReq[rid];
+  if (!r) return;
+  delete v.mcpReq[rid];
+  audit(v, 'mcp-withdrawn', r && Array.isArray(r.names) ? r.names.join(',') : null, rid, null);
+}
+
+function dropMcpRequestsFor(v, names) {
+  if (!v.mcpReq) return;
+  for (const rid of Object.keys(v.mcpReq)) {
+    const r = v.mcpReq[rid];
+    if (!r || !Array.isArray(r.names) || r.names.some(n => names.indexOf(n) !== -1)) withdrawMcpRequest(v, rid);
+  }
+  if (!Object.keys(v.mcpReq).length) delete v.mcpReq;
+}
+
+function cleanReason(reason) {
+  return String(reason == null ? '' : reason).replace(/\s+/g, ' ').trim().slice(0, REASON_MAX);
+}
+
+function publicRequest(r) {
+  return {
+    rid: r.rid, names: r.names.slice(), servers: r.servers ? r.servers.slice() : null,
+    reason: r.reason, by: r.by, at: r.at
+  };
+}
+
+// `cwd` is where the requester runs: it decides which .mcp.json counts, and
+// the approval reads the server definitions again from the same place.
+function requestMcp(names, servers, reason, by, info, cwd) {
+  const who = actorOf(by);
+  if (!isAI(who)) throw fail('only an assistant files an MCP access request');
+  const why = cleanReason(reason);
+  if (!why) throw fail('say why the access is needed: a reason is required (one line, 200 characters at most)');
+  const list = Array.from(new Set((Array.isArray(names) ? names : [names])
+    .map(x => normalizeName(x)).filter(Boolean)));
+  if (!list.length) throw fail('name at least one key');
+  if (list.length > 50) throw fail('50 keys at most in one request');
+  const srvList = (servers === null || servers === undefined) ? null : parseServerList(servers);
+  const inf = info || mcpServerInfo(cwd);
+  const v = loadRaw();
+  pruneMcpRequests(v);
+  // A request from an assistant the user has since switched to "off" is never
+  // shown (pendingMcp skips it), so it must not hold the one slot either.
+  let withdrew = false;
+  for (const rid of Object.keys(v.mcpReq || {})) {
+    let mode = 'off';
+    try { mode = policyFor(v.mcpReq[rid].by).mcpByAI; } catch (e) { mode = 'off'; }
+    if (mode === 'off') { withdrawMcpRequest(v, rid); withdrew = true; }
+  }
+  if (v.mcpReq && !Object.keys(v.mcpReq).length) delete v.mcpReq;
+  if (v.mcpReq && Object.keys(v.mcpReq).length) {
+    if (withdrew) saveRaw(v, false);
+    throw fail('another MCP access request is already waiting for the user: wait for their answer before asking again');
+  }
+  const entries = list.map(n => {
+    const s = findByName(v, n);
+    if (!s) {
+      const e = fail('unknown key: {0}', n);
+      e.suggestions = suggest(n, Object.keys(v.secrets).map(id => v.secrets[id].name));
+      throw e;
+    }
+    return s;
+  });
+  const srv = {};
+  if (srvList) {
+    for (const id of srvList) {
+      if (!inf[id]) throw fail('unknown MCP server: {0}', id);
+      srv[id] = inf[id].hash;
+    }
+  }
+  const r = {
+    rid: crypto.randomUUID(),
+    names: entries.map(s => s.name), entryIds: entries.map(s => s.id),
+    fps: entries.map(s => s.fingerprint || null),
+    allow: true, servers: srvList, reason: why, by: who, at: Date.now(), srv,
+    cwd: cwd ? String(cwd) : null
+  };
+  r.mac = mcpReqMac(r);
+  if (!v.mcpReq) v.mcpReq = {};
+  v.mcpReq[r.rid] = r;
+  audit(v, 'mcp-request', r.names.join(','), srvList ? srvList.join(',') : 'all', who);
+  saveRaw(v, false);
+  return publicRequest(r);
+}
+
+// What the window needs to show, facts included, never a value. A requester
+// whose MCP setting is now 'off' has nothing to show: the user switched it off
+// after the request was filed.
+function pendingMcp() {
+  let v;
+  try { v = loadRaw(); } catch (e) { return []; }
+  let reqs;
+  try { reqs = validMcpRequests(v); } catch (e) { return []; }
+  if (!reqs.length) return [];
+  const groups = groupIndex();
+  const out = [];
+  for (const r of reqs) {
+    let mode = 'off';
+    try { mode = policyFor(r.by).mcpByAI; } catch (e) { mode = 'off'; }
+    if (mode === 'off') continue;
+    const inf = mcpServerInfo(r.cwd || undefined);
+    const keys = r.names.map(n => {
+      const s = findByName(v, n);
+      if (!s) return null;
+      return {
+        name: s.name, kind: kindSource(s.kind), createdBy: s.createdBy || null,
+        group: groupFields(s, groups).group, confirm: !!s.confirm, mcp: !!s.mcp,
+        mcpServers: (s.mcpServers && s.mcpServers.length) ? s.mcpServers.slice() : null
+      };
+    }).filter(Boolean);
+    const srvInfo = {};
+    for (const id of (r.servers || Object.keys(inf))) {
+      if (inf[id]) srvInfo[id] = { transport: inf[id].transport, wrapped: inf[id].wrapped, scope: inf[id].scope };
+    }
+    out.push(Object.assign(publicRequest(r), { keys, srvInfo, known: Object.keys(inf).sort() }));
+  }
+  return out;
+}
+
+// shown = { names, servers, chosen }: what the window displayed. `chosen` true
+// means the user picked the servers themselves ("Choose servers"); otherwise
+// the servers must be exactly the request's own.
+function approveMcp(rid, shown) {
+  const sh = shown || {};
+  const v = loadRaw();
+  const r = validMcpRequests(v).find(x => x.rid === rid);
+  if (!r) throw fail('no pending MCP access request under that reference');
+  // A request that no longer matches what was shown can never be approved, so
+  // it is answered right here, as refused. Left in place, it would never be
+  // shown again, hold the one request slot for fifteen minutes, and keep the
+  // waiting script saying "pending".
+  const changed = () => {
+    delete v.mcpReq[rid];
+    if (!Object.keys(v.mcpReq).length) delete v.mcpReq;
+    audit(v, 'mcp-rejected', r.names.join(','), rid, 'user');
+    try { saveRaw(v, false); } catch (e) { /* the request expires on its own */ }
+    return fail('the request changed after it was shown: nothing was applied');
+  };
+  const sorted = a => a.map(String).slice().sort();
+  if (!Array.isArray(sh.names) || JSON.stringify(sorted(sh.names)) !== JSON.stringify(sorted(r.names))) {
+    throw changed();
+  }
+  let servers;
+  if (sh.chosen) {
+    if (!Array.isArray(sh.servers) || !sh.servers.length) throw fail('choose at least one server');
+    servers = parseServerList(sh.servers);
+  } else {
+    const a = sh.servers == null ? null : (Array.isArray(sh.servers) ? sorted(sh.servers) : 'bad');
+    const b = r.servers ? sorted(r.servers) : null;
+    if (JSON.stringify(a) !== JSON.stringify(b)) throw changed();
+    servers = r.servers ? r.servers.slice() : null;
+  }
+  const entries = r.entryIds.map((id, i) => {
+    const s = v.secrets[id];
+    if (!s || s.name !== r.names[i] || (s.fingerprint || null) !== r.fps[i]) throw changed();
+    return s;
+  });
+  const inf = mcpServerInfo(r.cwd || undefined);
+  for (const id of Object.keys(r.srv || {})) {
+    if (!inf[id] || inf[id].hash !== r.srv[id]) throw changed();
+  }
+  for (const s of entries) open(s);          // a tampered entry aborts before anything moves
+  delete v.mcpReq[rid];
+  if (!Object.keys(v.mcpReq).length) delete v.mcpReq;
+  audit(v, 'mcp-approved', r.names.join(','), rid, 'user');
+  for (const s of entries) applyMcp(v, s, true, servers, r.by);
+  saveRaw(v, true);
+  return { rid, names: r.names.slice(), servers, by: r.by };
+}
+
+function rejectMcp(rid) {
+  const v = loadRaw();
+  const r = v.mcpReq && v.mcpReq[rid];
+  if (!r) return false;
+  delete v.mcpReq[rid];
+  if (!Object.keys(v.mcpReq).length) delete v.mcpReq;
+  audit(v, 'mcp-rejected', Array.isArray(r.names) ? r.names.join(',') : null, rid, 'user');
+  saveRaw(v, false);
+  return true;
+}
+
+// The state of a request for a waiting script: 'approved', 'rejected',
+// 'pending', or 'gone' when nothing is waiting any more without an answer
+// having been given (the key changed or was removed, the request expired, or
+// its author was switched off). Read from the journal, where every outcome
+// carries the request id, then from the vault itself.
+// One read for both questions: an answer and the removal of the request land
+// in the same save, so a single copy of the file can never show the request
+// gone while its answer is still missing.
+function mcpRequestState(rid) {
+  let v;
+  try { v = loadRaw(); } catch (e) { return 'pending'; }   // unreadable for now
+  const hits = pruneAudit(v.audit).slice(-100).filter(e => e && e.detail === rid);
+  if (hits.some(e => e.event === 'mcp-approved')) return 'approved';
+  if (hits.some(e => e.event === 'mcp-rejected')) return 'rejected';
+  if (hits.some(e => e.event === 'mcp-withdrawn')) return 'gone';
+  if (!validMcpRequests(v).some(r => r.rid === rid)) return 'gone';
+  return 'pending';
+}
+
+// ------------------------------------------------- what an assistant may do
+//
+// The two doors (the bridge scripts for Claude, the MCP server for ChatGPT)
+// call these and only format the answer. Same rules, same refusals, same
+// requests, whoever asks.
+
+// Changes MCP access on existing keys. Removal and narrowing apply at once;
+// a grant follows decideGrant() and may become a request for the user.
+// Returns { status: 'applied'|'requested'|'refused', why, keys?, request? }.
+function aiChangeMcp(o) {
+  const a = o || {};
+  const by = actorOf(a.by);
+  if (!isAI(by)) throw fail('only an assistant goes through this path');
+  const allow = !!a.allow;
+  const servers = allow && a.servers != null ? parseServerList(a.servers) : null;
+  const list = Array.from(new Set((Array.isArray(a.names) ? a.names : [a.names])
+    .map(x => normalizeName(x)).filter(Boolean)));
+  if (!list.length) throw fail('name at least one key');
+  const reason = cleanReason(a.reason);
+  const pol = policyFor(by);
+  const info = mcpServerInfo(a.cwd);
+  const v = loadRaw();
+  const entries = list.map(n => {
+    const s = findByName(v, n);
+    if (!s) {
+      const e = fail('unknown key: {0}', n);
+      e.suggestions = suggest(n, Object.keys(v.secrets).map(id => v.secrets[id].name));
+      throw e;
+    }
+    return { name: s.name, mcp: !!s.mcp, mcpServers: s.mcpServers || null, confirm: !!s.confirm };
+  });
+  const d = decideGrant({ entries, servers, info, mode: pol.mcpByAI, creation: false, allow });
+  if (d.action === 'refuse') return { status: 'refused', why: d.why, mode: pol.mcpByAI };
+  // A reason is what the user reads before deciding on a grant. Removing,
+  // narrowing or keeping the same scope decides nothing for them, so it needs
+  // none; and "off" is reported above, before any complaint about a reason.
+  const narrowing = !allow || entries.every(e => isNarrowing(e, true, servers));
+  if (!narrowing && !reason) {
+    throw fail('say why the access is needed: a reason is required (one line, 200 characters at most)');
+  }
+  if (d.action === 'apply') {
+    const keys = setMcpMany(entries.map(e => ({ name: e.name, allowed: allow, servers })), by);
+    return { status: 'applied', why: d.why, keys, mode: pol.mcpByAI };
+  }
+  const request = requestMcp(entries.map(e => e.name), servers, reason, by, info, a.cwd);
+  return { status: 'requested', why: d.why, request, mode: pol.mcpByAI };
+}
+
+// Creates a key on behalf of an assistant: refuses a value the vault already
+// holds under another name, resolves the group (an existing one is a
+// placement; creating one follows the layout setting), decides MCP, writes the
+// key, and files a request when the user has to be asked. Never returns the value.
+function aiCreateKey(o) {
+  const a = o || {};
+  const by = actorOf(a.by);
+  if (!isAI(by)) throw fail('only an assistant goes through this path');
+  const n = validateName(a.name);
+  const value = a.value;
+  if (typeof value !== 'string' || !value.length) throw fail('Empty value');
+  const v = loadRaw();
+  if (findByName(v, n)) throw fail('a key named {0} already exists', n);
+  const owner = fingerprintOwner(v, fingerprint(value), n);
+  if (owner) {
+    const e = owner.binned
+      ? fail('this value is already stored in the bin as {0}: ask the user to restore it rather than storing a copy', owner.name)
+      : fail('this value is already stored as {0}: use that key, or ask the user to rename it, rather than storing a copy', owner.name);
+    e.owner = owner.name;
+    throw e;
+  }
+  const pol = policyFor(by);
+  const res = { name: n, group: null, groupCreated: false, groupNote: null, mcp: { status: 'none' } };
+
+  let groupId = null;
+  if (a.group !== undefined && a.group !== null && a.group !== '') {
+    if (!normalizeGroupName(a.group)) {
+      throw fail('invalid group name: use letters, digits, spaces and . _ & + - (40 characters at most)');
+    }
+    const g = findGroup(a.group);
+    if (g) groupId = g.id;
+    else if (pol.layoutByAI) {
+      const made = createGroup(a.group, undefined, by);
+      groupId = made.id;
+      res.groupCreated = true;
+    } else {
+      const names = layout().filter(i => i.type === 'group').map(i => i.name);
+      res.groupNote = 'not placed in a group: "' + normalizeGroupName(a.group) + '" does not exist and the user ' +
+        'does not let the AI create groups. Existing groups: ' + (names.length ? names.join(', ') : 'none');
+    }
+  }
+
+  let grant = null;
+  let ask = null;
+  let info = null;
+  if (a.mcp && a.mcp.allow) {
+    const servers = a.mcp.servers != null ? parseServerList(a.mcp.servers) : null;
+    info = mcpServerInfo(a.cwd);
+    const d = decideGrant({
+      entries: [{ name: n, mcp: false, confirm: false }], servers, info,
+      mode: pol.mcpByAI, creation: true, allow: true
+    });
+    if (d.action === 'apply') grant = { servers };
+    else if (d.action === 'request') ask = { servers, why: d.why };
+    else res.mcp = { status: 'refused', why: d.why, servers };
+  } else if (a.mcp && !a.mcp.allow) {
+    res.mcp = { status: 'off' };
+  }
+
+  const r = put(n, value, {
+    note: a.note || null, by,
+    mcp: !!grant, mcpServers: grant ? grant.servers : null,
+    groupId: groupId || null, groupBy: groupId ? by : null
+  });
+  res.kind = r.kind;
+  res.length = value.length;
+  if (groupId) { const g = findGroup(groupId); res.group = g ? g.name : null; }
+  if (grant) res.mcp = { status: 'applied', servers: grant.servers };
+  if (ask) {
+    try {
+      const reason = cleanReason(a.reason) || cleanReason('new key: ' + (a.note || n));
+      const request = requestMcp([n], ask.servers, reason, by, info, a.cwd);
+      res.mcp = { status: 'requested', servers: ask.servers, why: ask.why, request };
+    } catch (e) {
+      res.mcp = { status: 'request-failed', servers: ask.servers, why: ask.why, error: e.message };
+    }
+  }
+  return res;
 }
 
 // -------------------------------------------------------------------- execution tokens
@@ -2228,6 +3715,52 @@ function healthCheck() {
   return { ok: !issues.some(i => i.level === 'error'), issues, mode: _masterMode, downgrade: _downgrade };
 }
 
+// Every read-modify-write of the vault, the layout, the bin or the policy goes
+// through the write lock (see withVaultLock). The names are rebound rather
+// than each body wrapped, so the calls these functions make to one another go
+// through the same, re-entrant, lock. consume() and sweep() take it themselves:
+// consume() must not hold it across the confirmation it may wait a minute for.
+put = locked(put);
+replaceValue = locked(replaceValue);
+rename = locked(rename);
+remove = locked(remove);
+setTtl = locked(setTtl);
+setMcpMany = locked(setMcpMany);
+setPublic = locked(setPublic);
+setConfirm = locked(setConfirm);
+setNote = locked(setNote);
+reveal = locked(reveal);
+revokeAll = locked(revokeAll);
+requestReplace = locked(requestReplace);
+approveReplace = locked(approveReplace);
+rejectReplace = locked(rejectReplace);
+setPolicy = locked(setPolicy);
+resignPolicy = locked(resignPolicy);
+setExportFields = locked(setExportFields);
+exportWrite = locked(exportWrite);
+exportRefresh = locked(exportRefresh);
+exportImport = locked(exportImport);
+recoveryRestore = locked(recoveryRestore);
+trashPutMany = locked(trashPutMany);
+purgeTrash = locked(purgeTrash);
+restoreTrashed = locked(restoreTrashed);
+emptyTrash = locked(emptyTrash);
+createGroup = locked(createGroup);
+renameGroup = locked(renameGroup);
+deleteGroup = locked(deleteGroup);
+addSeparator = locked(addSeparator);
+editSeparator = locked(editSeparator);
+removeSeparator = locked(removeSeparator);
+moveItem = locked(moveItem);
+setCollapsed = locked(setCollapsed);
+setAllCollapsed = locked(setAllCollapsed);
+setKeyGroup = locked(setKeyGroup);
+requestMcp = locked(requestMcp);
+approveMcp = locked(approveMcp);
+rejectMcp = locked(rejectMcp);
+aiChangeMcp = locked(aiChangeMcp);
+aiCreateKey = locked(aiCreateKey);
+
 module.exports = {
   VAULT_DIR, VAULT_PATH, KEY_PATH, TMP_DIR, NAME_RE,
   validateName, normalizeName, list, listFast, put, rename, replaceValue, remove, setTtl, setMcp, setNote,
@@ -2243,5 +3776,15 @@ module.exports = {
   exportWrite, exportRefresh, exportStatus, exportForget, exportImport, exportInspect,
   exportEnsure,
   scanText,
-  listTrash, restoreTrashed, emptyTrash, purgeTrash, TRASH_DAYS
+  listTrash, restoreTrashed, emptyTrash, purgeTrash, TRASH_DAYS,
+  // 1.2: groups and separators
+  layout, normalizeGroupName, findGroup, createGroup, renameGroup, deleteGroup,
+  addSeparator, editSeparator, removeSeparator, moveItem, setCollapsed, setAllCollapsed,
+  setKeyGroup, suggestGroups, rotationOf,
+  // 1.2: MCP access decided by the AI
+  setMcpMany, parseServerList, isNarrowing, mcpServerInfo, fingerprintTaken, decideGrant,
+  requestMcp, pendingMcp, approveMcp, rejectMcp, mcpRequestState, VAULT_MCP_SERVER,
+  aiChangeMcp, aiCreateKey,
+  // 1.2: signed policy
+  policyFor, policyFast, legacyAutoApprove
 };

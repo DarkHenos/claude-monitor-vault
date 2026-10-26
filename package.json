@@ -2,7 +2,7 @@
   "name": "claude-monitor-vault",
   "displayName": "Claude Monitor & Vault + ChatGPT",
   "description": "Monitor Claude Code and ChatGPT / Codex usage, switch session models, share project memory and manage encrypted local secrets in VS Code.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "l10n": "./l10n",
   "publisher": "alexossart",
   "license": "MIT",
@@ -300,72 +300,120 @@
         "icon": "$(server)"
       },
       {
+        "command": "claudeVault.newGroup",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.newGroup%",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "claudeVault.newSeparator",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.newSeparator%",
+        "icon": "$(dash)"
+      },
+      {
+        "command": "claudeVault.setGroup",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.setGroup%",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "claudeVault.organize",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.organize%",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "claudeVault.renameGroup",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.renameGroup%",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "claudeVault.deleteGroup",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.deleteGroup%",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "claudeVault.suggestGroups",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.suggestGroups%",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "claudeVault.groupMcp",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.groupMcp%",
+        "icon": "$(plug)"
+      },
+      {
         "command": "agentBridge.switch",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.switch%",
         "icon": "$(arrow-swap)"
       },
       {
         "command": "agentBridge.launch",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.launch%"
       },
       {
         "command": "agentBridge.memory",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.memory%"
       },
       {
         "command": "agentBridge.sync",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.sync%"
       },
       {
         "command": "agentBridge.refresh",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.refresh%",
         "icon": "$(refresh)"
       },
       {
         "command": "agentBridge.enableCodex",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.enableCodex%"
       },
       {
         "command": "agentBridge.connectVault",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.connectVault%"
       },
       {
         "command": "agentBridge.disconnectVault",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.disconnectVault%"
       },
       {
         "command": "agentBridge.diagnostics",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.diagnostics%"
       },
       {
         "command": "agentBridge.restoreMemory",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.restoreMemory%"
       },
       {
         "command": "agentBridge.whatsNew",
-        "category": "Claude Monitor",
+        "category": "%cat.monitor%",
         "title": "%bridge.whatsNew%",
         "icon": "$(megaphone)"
       },
       {
         "command": "agentBridge.actions",
         "title": "%bridge.actions%",
-        "category": "Claude Monitor"
+        "category": "%cat.monitor%"
       },
       {
         "command": "agentBridge.settings",
         "title": "%bridge.settings%",
-        "category": "Claude Monitor"
+        "category": "%cat.monitor%"
       }
     ],
     "menus": {
