@@ -38,3 +38,6 @@ intellij/build/
 intellij/.gradle/
 intellij/.intellijPlatform/
 intellij/.kotlin/
+
+# Written by Claude Code each time it loads the pane from this folder.
+vault-pane/.claude-plugin/types/

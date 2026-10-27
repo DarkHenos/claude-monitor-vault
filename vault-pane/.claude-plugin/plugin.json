@@ -1,0 +1,8 @@
+{
+  "name": "vault-pane",
+  "version": "0.1.1",
+  "description": "A pane beside the chat: the Claude Vault keys (names only), their groups and MCP access, and the Claude quotas.",
+  "author": { "name": "DarkHenos" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

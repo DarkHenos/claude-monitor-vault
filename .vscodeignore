@@ -20,3 +20,6 @@ package-lock.json
 # The JetBrains plugin and its Node host are not part of the VS Code package.
 intellij/**
 host/**
+
+# The Claude Code pane is installed on its own, not inside the VS Code package.
+vault-pane/**
