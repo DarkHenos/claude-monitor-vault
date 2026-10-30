@@ -16,6 +16,7 @@ declare module 'claude-code' {
       listing: Shaped<VaultListing>
       quotas: Shaped<Quota[]>
       folded: Shaped<string[]>
+      isShown: Shaped<boolean>
     }
   }
 }

@@ -20,12 +20,16 @@ const quotas = atom({ plugin: 'vault-pane', key: 'quotas' } as const,
   [] as Quota[], { shape: 'quotas-1' })
 const folded = atom({ plugin: 'vault-pane', key: 'folded' } as const,
   [] as string[], { shape: 'folded-1' })
+// Whether the pane is drawn: the launcher above the prompt shows only when not.
+const isShown = atom({ plugin: 'vault-pane', key: 'isShown' } as const,
+  false, { shape: 'isShown-1' })
 
 const TEXTS = {
   en: {
     title: 'Claude Vault',
     describe: 'Show the Claude Vault pane: key names, groups, MCP access and quotas',
     opened: 'Claude Vault pane opened.',
+    open: 'Open',
     keys: (n: number, mcp: number) => `${n} key${n === 1 ? '' : 's'} · ${mcp} for MCP`,
     empty: 'The vault is empty. Create a key in the Claude Vault view.',
     ungrouped: 'Ungrouped',
@@ -35,6 +39,7 @@ const TEXTS = {
     inserted: (name: string) => `{{vault:${name}}} inserted.`,
     noNode: 'Node.js was not found on the PATH: the vault cannot be listed.',
     noBridge: 'The vault bridge is not installed: open VS Code once with the extension.',
+    remote: 'Cloud session: the vault stays on your computer and is not listed here. Quotas still show.',
     oldBridge: 'Groups and MCP access show once the extension has updated the vault bridge.',
     session: 'Session',
     week: 'Week',
@@ -45,6 +50,7 @@ const TEXTS = {
     title: 'Claude Vault',
     describe: 'Affiche le panneau Claude Vault : noms des clés, groupes, accès MCP et quotas',
     opened: 'Panneau Claude Vault ouvert.',
+    open: 'Ouvrir',
     keys: (n: number, mcp: number) => `${n} clé${n > 1 ? 's' : ''} · ${mcp} pour MCP`,
     empty: 'Le coffre est vide. Créez une clé dans la vue Claude Vault.',
     ungrouped: 'Sans groupe',
@@ -54,6 +60,7 @@ const TEXTS = {
     inserted: (name: string) => `{{vault:${name}}} inséré.`,
     noNode: 'Node.js est introuvable dans le PATH : impossible de lister le coffre.',
     noBridge: "Le pont du coffre n'est pas installé : ouvrez VS Code une fois avec l'extension.",
+    remote: 'Session cloud : le coffre reste sur votre ordinateur et ne peut pas être listé ici. Les quotas restent affichés.',
     oldBridge: "Groupes et accès MCP s'afficheront quand l'extension aura mis à jour le pont du coffre.",
     session: 'Session',
     week: 'Semaine',
@@ -110,6 +117,12 @@ async function bridge($: EngineInterface): Promise<string> {
   return `${home}/.claude/claude-vault-bridge/list.js`
 }
 
+// A cloud session runs in a container: the bridge lives on the person's own
+// computer, so its absence there is expected, not something to install.
+async function missing($: EngineInterface): Promise<string> {
+  return (await $.env.get('CLAUDE_CODE_REMOTE')) === 'true' ? T.remote : T.noBridge
+}
+
 let isBusy = false
 
 async function refresh($: EngineInterface): Promise<void> {
@@ -127,7 +140,7 @@ async function refresh($: EngineInterface): Promise<void> {
         isOld = true
       }
       if (ran.exitCode === 0) next = { items: parse(ran.stdout), note: isOld ? T.oldBridge : undefined, at: Date.now() }
-      else if (/Cannot find module/.test(ran.stderr)) next = { items: [], error: T.noBridge, at: Date.now() }
+      else if (/Cannot find module/.test(ran.stderr)) next = { items: [], error: await missing($), at: Date.now() }
       else next = { items: [], error: ran.stderr.trim().split('\n')[0] || `exit ${ran.exitCode}`, at: Date.now() }
     } catch {
       next = { items: [], error: T.noNode, at: Date.now() }
@@ -169,8 +182,15 @@ function severity(percent: number): 'success' | 'warning' | 'error' {
   return percent >= 90 ? 'error' : percent >= 75 ? 'warning' : 'success'
 }
 
+// Opened on its own (session start), a pane is only drawn on a wide enough
+// window; a press on the launcher or /vault places it at any width.
 async function open($: EngineInterface): Promise<void> {
-  await $.ui.open({ id: PANE, title: T.title })
+  const opened = await $.ui.open({ id: PANE, title: T.title, columns: 42 })
+  await update($, isShown, () => opened.isPlaced)
+}
+
+function quotaLabel(kind: string): string {
+  return kind === 'five_hour' ? T.session : kind === 'seven_day' ? T.week : kind
 }
 
 export const register: Register = on => {
@@ -195,6 +215,7 @@ export const register: Register = on => {
 
   // A failure here must never keep a pane open, this one or another plugin's.
   on('ui.close', async ($, e, next) => {
+    if (e.id === PANE) await update($, isShown, () => false)
     if (e.id === PANE && e.origin.kind === 'person') await $.store.set(HIDDEN, true)
 
     return next(e)
@@ -214,6 +235,26 @@ export const register: Register = on => {
     return ran
   }).catch(($, e, next) => next(e))
 
+  // The launcher: one row above the prompt while the pane is not drawn.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || (await read($, isShown))) return next(e)
+
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const limits = await read($, quotas)
+
+    return (
+      <Box flexDirection="row" gap={1}>
+        <Button key="launch" onPress={() => open($)}>🔐 {T.title}</Button>
+        {limits.map(q => (
+          <Text dimColor>
+            {quotaLabel(q.kind)}{' '}
+            <Text color={severity(q.percentUsed)}>{Math.round(q.percentUsed)} %</Text>
+          </Text>
+        ))}
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const list = await read($, listing)
@@ -226,7 +267,7 @@ export const register: Register = on => {
       ? [<Text dimColor>{T.noQuota}</Text>]
       : limits.map(q => (
         <Text>
-          {q.kind === 'five_hour' ? T.session : q.kind === 'seven_day' ? T.week : q.kind}{' '}
+          {quotaLabel(q.kind)}{' '}
           <Text color={severity(q.percentUsed)} bold>{Math.round(q.percentUsed)} %</Text>
           <Text dimColor> {resetText(q.resetsAt)}</Text>
         </Text>

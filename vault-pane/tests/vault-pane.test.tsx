@@ -27,9 +27,9 @@ const LISTING = [
   '',
 ].join('\n')
 
-function world(on: any) {
+function world(on: any, env: Record<string, string> = {}) {
   mock.store(on)
-  mock.env(on, { USERPROFILE: 'C:/Users/me' })
+  mock.env(on, { USERPROFILE: 'C:/Users/me', ...env })
   return mock.clock(on)
 }
 
@@ -120,6 +120,67 @@ test('a missing bridge is said in the pane', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /bridge|pont/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('a cloud session says the vault stays on the computer, and keeps the quotas', async ($, on) => {
+  const clock = world(on, { CLAUDE_CODE_REMOTE: 'true', HOME: '/root' })
+  on('command.register', () => ({ value: { command: 'vault' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.usage', () => ({
+    value: { startedAt: 0, context: {}, rateLimits: [{ kind: 'five_hour', percentUsed: 42 }] },
+  }))
+  on('process.run', () => ({
+    value: {
+      exitCode: 1, stdout: '', stderr: "Error: Cannot find module '/root/.claude/claude-vault-bridge/list.js'",
+      isStdoutTruncated: false, isStderrTruncated: false,
+    },
+  }))
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Cloud|cloud/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /bridge is not installed|pont du coffre/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /42 %/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a pane left undrawn at start shows a launcher above the prompt that opens it', async ($, on) => {
+  const clock = world(on)
+  const opens: unknown[] = []
+  let isAsked = false
+  on('command.register', () => ({ value: { command: 'vault' } }))
+  on('ui.open', (_: unknown, e: unknown) => {
+    opens.push(e)
+    return { value: isAsked ? { isPlaced: true } : { isPlaced: false, reason: 'narrow' } }
+  })
+  on('session.usage', () => ({
+    value: { startedAt: 0, context: {}, rateLimits: [{ kind: 'five_hour', percentUsed: 12 }] },
+  }))
+  on('process.run', () => ({
+    value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  // Stands for the engine's own band once the launcher steps aside.
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+
+  const band = await $.ui.mount({ plugin: 'vault-pane', component: 'AbovePrompt', surface: 'desktop', props: { hasSurvey: false } } as any)
+  expect(await band.find({ key: 'launch' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /12 %/ })).toBeDefined()
+
+  isAsked = true
+  await band.press({ key: 'launch' })
+  await clock.settle()
+  expect(opens.length).toBe(2)
+  expect(await band.find({ key: 'launch' })).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /engine/ })).toBeDefined()
+  await band.unmount()
 })
 
 test('an older bridge still lists the names', async ($, on) => {
