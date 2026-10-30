@@ -60,6 +60,12 @@ try {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// vault-pane carries its own copy of the bridge, to work without VS Code: a
+// fix made in vault/ alone would never reach a person who only has the mod.
+const drift = require('child_process').spawnSync(process.execPath,
+  [path.join(ROOT, 'scripts', 'sync-vault-pane.js'), '--check'], { encoding: 'utf8' });
+check('vault-pane/bridge identique a vault/', drift.status === 0, String(drift.stderr || '').trim());
+
 console.log(results.join('\n'));
 const pass = results.filter(r => r.startsWith('PASS')).length;
 console.log('\n' + pass + ' OK, ' + (results.length - pass) + ' FAIL');

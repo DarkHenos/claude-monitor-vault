@@ -45,6 +45,7 @@ const GUARD_RE = new RegExp([
   'claude-vault-bridge',                         // the bridge, stable path
   'masterkey\\.bin', 'vault\\.json', 'tokens\\.json',
   'vault[\\\\/](core|get|hook|mcp-server)\\.js',
+  'claude-monitor-vault[\\\\/]+vault-pane',       // the mod's copy of the bridge and its tools
   'ProtectedData',                               // DPAPI called by hand
   'CryptUnprotectData'
 ].join('|'), 'i');
@@ -193,7 +194,7 @@ function aiRules() {
         '"confirm every use", for every server at once, or for remote servers: those ask the user.'
       : 'MCP access setting: ask. You may remove access (' + setCommand() + ' NAME --no-mcp) and ' +
         'grant it when you create a key, for named local servers (add.js --mcp=SERVER). Anything ' +
-        'else becomes a request the user answers in VSCode: ' + setCommand() +
+        'else becomes a request the user answers in Claude Vault: ' + setCommand() +
         ' NAME --mcp=SERVER --reason "why" (one line).';
   const lay = pol.layoutByAI
     ? 'Keep related keys in one group: ' + setCommand() + ' NAME... --group "Name" (created if ' +
@@ -226,7 +227,7 @@ function onSessionStart() {
         hookEventName: 'SessionStart',
         additionalContext:
           'Claude Vault (local encrypted vault) is installed but empty. ' +
-          'Ask the user to create a key in the Claude Vault view in VSCode. ' + listing + ' ' +
+          'Ask the user to create a key in Claude Vault (the VS Code view, or + in the pane). ' + listing + ' ' +
           aiRules()
       }
     });
@@ -341,22 +342,22 @@ function withoutAllowedCalls(cmd) {
 // the USER reads live here, keyed by the language mirrored to the vault by the
 // extension. {0} is the key name(s). No long dashes, a hard project rule.
 const MCP_DENY = {
-  en: '{0} is not authorized for MCP tool calls. To use it in an MCP tool, turn on "Allow for MCP" for it in the Claude Vault view of VSCode.',
-  fr: "{0} n'est pas autorisee pour les appels d'outils MCP. Pour l'utiliser dans un outil MCP, active « Autoriser pour MCP » sur cette cle dans la vue Claude Vault de VSCode.",
-  es: '{0} no esta autorizada para llamadas de herramientas MCP. Para usarla en una herramienta MCP, activa « Permitir para MCP » en la vista Claude Vault de VSCode.',
-  de: '{0} ist nicht fuer MCP-Tool-Aufrufe freigegeben. Um sie in einem MCP-Tool zu verwenden, aktiviere « Fuer MCP zulassen » in der Claude-Vault-Ansicht in VSCode.',
-  pt: '{0} nao esta autorizada para chamadas de ferramentas MCP. Para usa-la numa ferramenta MCP, ative « Permitir para MCP » na vista Claude Vault do VSCode.'
+  en: '{0} is not authorized for MCP tool calls. To use it in an MCP tool, turn on "Allow for MCP" for it in Claude Vault (the VS Code view or the pane).',
+  fr: "{0} n'est pas autorisee pour les appels d'outils MCP. Pour l'utiliser dans un outil MCP, active « Autoriser pour MCP » sur cette cle dans Claude Vault (la vue VS Code ou le panneau).",
+  es: '{0} no esta autorizada para llamadas de herramientas MCP. Para usarla en una herramienta MCP, activa « Permitir para MCP » en Claude Vault (la vista de VS Code o el panel).',
+  de: '{0} ist nicht fuer MCP-Tool-Aufrufe freigegeben. Um sie in einem MCP-Tool zu verwenden, aktiviere « Fuer MCP zulassen » in Claude Vault (VS-Code-Ansicht oder Bereich).',
+  pt: '{0} nao esta autorizada para chamadas de ferramentas MCP. Para usa-la numa ferramenta MCP, ative « Permitir para MCP » no Claude Vault (a vista do VS Code ou o painel).'
 };
 
 // Added when the user lets the AI ask (any MCP setting but off): the user reads
 // that a request is possible, in their language, and Claude gets the exact
 // command, in English, right after.
 const MCP_ASK = {
-  en: 'Claude can request this access; you approve or refuse it in VSCode.',
-  fr: "Claude peut demander cet acces ; tu l'acceptes ou le refuses dans VSCode.",
-  es: 'Claude puede solicitar este acceso; tu lo apruebas o lo rechazas en VSCode.',
-  de: 'Claude kann diesen Zugriff anfragen; du bestaetigst oder lehnst ihn in VSCode ab.',
-  pt: 'O Claude pode pedir este acesso; voce aprova ou recusa no VSCode.'
+  en: 'Claude can request this access; you approve or refuse it in Claude Vault.',
+  fr: "Claude peut demander cet acces ; tu l'acceptes ou le refuses dans Claude Vault.",
+  es: 'Claude puede solicitar este acceso; tu lo apruebas o lo rechazas en Claude Vault.',
+  de: 'Claude kann diesen Zugriff anfragen; du bestaetigst oder lehnst ihn in Claude Vault ab.',
+  pt: 'O Claude pode pedir este acesso; voce aprova ou recusa no Claude Vault.'
 };
 
 function userLang() {
@@ -712,7 +713,7 @@ function onPreTool(input) {
           (missing.length > 1 ? ' are not found or expired' : ' is not found or expired') +
           ' in the vault. Keys available: ' +
           (known.filter(k => !k.expired).map(k => k.name).join(', ') || '(empty vault)') +
-          '. Ask the user to create it via the Claude Vault view in VSCode.'
+          '. Ask the user to create it in Claude Vault (the VS Code view, or + in the pane).'
       }
     });
   }

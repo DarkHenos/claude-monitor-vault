@@ -270,7 +270,7 @@ try {
         'commands only. Ask again later with: ' + setHint() + '\n';
     } else if (m.status === 'requested') {
       out += 'MCP access for ' + scopeText(m.servers) + ' needs the user (' + m.why +
-        '): a request is waiting in VSCode.\n';
+        '): a request is waiting in Claude Vault (VS Code or the pane).\n';
       process.stdout.write(out);
       out = '';
       const answer = waitForMcp(m.request.rid);
@@ -286,7 +286,7 @@ try {
           'usable in shell commands only. If an MCP tool still needs it, request access again with: ' +
           setHint() + '\n';
       } else {
-        out += 'The user has not answered yet; the request is still waiting in VSCode. ' +
+        out += 'The user has not answered yet; the request is still waiting in Claude Vault. ' +
           'The key is usable in shell commands meanwhile. Do not send the request again.\n';
       }
     } else if (!mcpFlag) {
@@ -344,7 +344,7 @@ try {
     die(name + ' was NOT replaced: the user refused. The existing value is untouched. ' +
         'Ask them what they would rather do instead of retrying.');
   }
-  die(name + ' was NOT replaced yet: the request is waiting for the user in VSCode and ' +
+  die(name + ' was NOT replaced yet: the request is waiting for the user in Claude Vault and ' +
       'they have not answered. Nothing has changed. Tell them the request is pending ' +
       'rather than sending it again.');
 } catch (e) {
