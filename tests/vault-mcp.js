@@ -58,7 +58,7 @@ function request(method, params = {}) {
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => {
   for (const p of pending.values()) clearTimeout(p.timer);
   child.stdin.end();
-  child.on('close', () => { fs.rmSync(temp, { recursive: true, force: true }); toolsOf12(); });
+  child.on('close', () => { fs.rmSync(temp, { recursive: true, force: true }); toolsOf12(); reasonInRealCore(); });
 });
 
 // 1.2: ChatGPT creates keys, changes MCP access and groups, reorganises the
@@ -93,7 +93,7 @@ module.exports = {
   rotationOf: () => null,
   policyFast: () => ({ mcpByAI: 'ask', layoutByAI: true }),
   aiCreateKey: o => { rec('aiCreateKey', [o]); return { name: o.name, kind: 'generic', length: o.value.length, group: o.group || null, groupCreated: !!o.group, mcp: o.mcp && o.mcp.allow ? { status: 'requested', servers: o.mcp.servers, why: 'every server', request: { rid: 'r-create', names: [o.name] } } : { status: 'none' } }; },
-  aiChangeMcp: o => { rec('aiChangeMcp', [o]); return o.allow ? { status: 'requested', why: 'widening', request: { rid: 'r-set', names: o.names } } : { status: 'applied', why: 'removal', keys: o.names.map(n => ({ name: n, mcp: false })) }; },
+  aiChangeMcp: o => { if (o.allow && !o.reason) throw new Error('a reason is required'); rec('aiChangeMcp', [o]); return o.allow ? { status: 'requested', why: 'widening', request: { rid: 'r-set', names: o.names } } : { status: 'applied', why: 'removal', keys: o.names.map(n => ({ name: n, mcp: false })) }; },
   mcpRequestState: rid => { rec('mcpRequestState', [rid]); return ++polls % 2 === 0 ? 'approved' : 'pending'; },
   setKeyGroup: (names, g, by, opts) => { rec('setKeyGroup', [names, g, by, opts]); return { group: g, names }; },
   createGroup: layoutFn('createGroup'), renameGroup: layoutFn('renameGroup'), deleteGroup: layoutFn('deleteGroup'),
@@ -165,4 +165,52 @@ module.exports = {
     console.log('PASS vault_layout: 1-based positions, required position for move, separator by id');
   } catch (e) { console.error(e); process.exitCode = 1; }
   finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+// The stub above only repeats the rule on the reason, which lives in core
+// (aiChangeMcp). Here the real server meets the real core, in a temporary home.
+// PATH points at an empty folder so that `security` and `secret-tool` cannot be
+// found: their entry is shared by every home, and a test must never overwrite
+// the real master key. The vault then settles for file permissions.
+function reasonInRealCore() {
+  const { spawnSync } = require('child_process');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-mcp-core-test-'));
+  const emptyPath = path.join(home, 'no-tools');
+  fs.mkdirSync(path.join(home, '.claude'));
+  fs.mkdirSync(emptyPath);
+  const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude'), PATH: emptyPath };
+  const vaultDir = path.join(__dirname, '../vault');
+  const seed = `
+const v = require(${JSON.stringify(path.join(vaultDir, 'core.js'))});
+const value = n => n + '-' + require('crypto').randomBytes(12).toString('hex');
+v.put('SCOPED', value('a'), { mcp: true, mcpServers: ['claude-monitor-vault', 'github'] });
+v.put('OPEN', value('b'), { mcp: true });`;
+  const calls = [
+    { name: 'vault_set', arguments: { names: ['SCOPED'], mcp: 'all' } },
+    { name: 'vault_list' },
+    { name: 'vault_set', arguments: { names: ['SCOPED'], mcp: ['claude-monitor-vault'] } },
+    { name: 'vault_set', arguments: { names: ['OPEN'], mcp: 'none' } },
+    { name: 'vault_list' }
+  ];
+  try {
+    const seeded = spawnSync(process.execPath, ['-e', seed], { env, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    assert.equal(seeded.status, 0, seeded.stderr);
+    const input = calls.map((params, i) => JSON.stringify({ jsonrpc: '2.0', id: i + 1, method: 'tools/call', params })).join('\n') + '\n';
+    const r = spawnSync(process.execPath, [path.join(vaultDir, 'mcp-server.js'), '--root', home], { input, env, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    assert.equal(r.status, 0, r.stderr);
+    const res = r.stdout.trim().split(/\r?\n/).map(l => JSON.parse(l));
+    const text = i => res[i].result.content[0].text;
+    const scope = (i, name) => (JSON.parse(text(i)).keys.find(k => k.name === name) || {}).scope;
+    assert.equal(res[0].result.isError, true);
+    assert.ok(/reason is required/.test(text(0)));
+    assert.deepEqual(scope(1, 'SCOPED'), ['claude-monitor-vault', 'github'], 'a refused grant changes nothing');
+    assert.ok(!res[2].result.isError, 'narrowing needs no reason');
+    assert.equal(JSON.parse(text(2)).mcp.status, 'applied');
+    assert.ok(!res[3].result.isError, 'removing needs no reason');
+    assert.equal(JSON.parse(text(3)).mcp.status, 'applied');
+    assert.deepEqual(scope(4, 'SCOPED'), ['claude-monitor-vault']);
+    assert.equal(scope(4, 'OPEN'), undefined);
+    console.log('PASS real core: a grant needs a reason, narrowing and removal do not');
+  } catch (e) { console.error(e); process.exitCode = 1; }
+  finally { fs.rmSync(home, { recursive: true, force: true }); }
 }
