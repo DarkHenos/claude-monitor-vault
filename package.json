@@ -782,7 +782,7 @@
     "@vscode/vsce": "^3.9.2"
   },
   "scripts": {
-    "test": "node tests/companion-colors.js && node tests/automatic-companion.js && node tests/companion.js && node tests/memory-links.js && node tests/updates.js && node tests/codex-client.js && node tests/companion-ui.js && node tests/vault-access.js && node tests/vault-mcp.js && node tests/bridge-files.js && node tests/l10n-shape.js",
+    "test": "node tests/companion-colors.js && node tests/automatic-companion.js && node tests/companion.js && node tests/memory-links.js && node tests/updates.js && node tests/codex-client.js && node tests/companion-ui.js && node tests/vault-access.js && node tests/vault-mcp.js && node tests/bridge-files.js && node tests/vault-pane-standalone.js && node tests/vault-pane-owner.js &&node tests/l10n-shape.js",
     "package": "vsce package --pre-release",
     "build:logo": "node scripts/render-logo.js",
     "build:marketplace": "node scripts/build-marketplace.js",

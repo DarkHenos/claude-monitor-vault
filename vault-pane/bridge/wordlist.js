@@ -1,0 +1,41 @@
+// Dictionnaire de la phrase de secours — 256 mots, soit 8 bits chacun.
+// Construit par selection sous contraintes puis verifie : mots uniques,
+// TROIS PREMIERES LETTRES uniques (une faute en fin de mot reste corrigible),
+// a-z seulement, 3 a 7 lettres, transcrivables a la main sans ambiguite.
+// L'ORDRE EST UN FORMAT : le modifier rend illisible toute phrase deja emise.
+'use strict';
+
+module.exports = [
+  'able', 'acid', 'actor', 'add', 'afraid', 'age', 'agree', 'air',
+  'alarm', 'album', 'alert', 'alien', 'alley', 'almond', 'alone', 'amber',
+  'angle', 'ankle', 'apple', 'april', 'arch', 'arena', 'argue', 'arm',
+  'arrow', 'art', 'ash', 'aside', 'ask', 'atlas', 'atom', 'audio',
+  'august', 'aunt', 'author', 'avoid', 'awake', 'axis', 'baby', 'bacon',
+  'badge', 'bag', 'baker', 'balance', 'bamboo', 'banana', 'bar', 'base',
+  'bat', 'beach', 'bed', 'beef', 'begin', 'behind', 'bell', 'bench',
+  'berry', 'best', 'better', 'beyond', 'bike', 'bird', 'bit', 'black',
+  'bleak', 'blind', 'block', 'blue', 'board', 'body', 'boil', 'bold',
+  'bomb', 'bone', 'book', 'border', 'boss', 'both', 'bounce', 'bow',
+  'box', 'brain', 'bread', 'brick', 'broad', 'brush', 'bubble', 'bucket',
+  'budget', 'buffalo', 'build', 'bulb', 'bundle', 'burden', 'bus', 'butter',
+  'buyer', 'buzz', 'cabin', 'cactus', 'cage', 'cake', 'call', 'camel',
+  'canal', 'cape', 'car', 'case', 'cat', 'cause', 'cave', 'cedar',
+  'cell', 'cement', 'census', 'cereal', 'chain', 'cheap', 'chief', 'choice',
+  'chrome', 'chunk', 'cider', 'cigar', 'cinema', 'circle', 'citizen', 'civil',
+  'claim', 'clean', 'click', 'clock', 'club', 'coach', 'cobra', 'cocoa',
+  'code', 'coffee', 'coin', 'cold', 'comb', 'cool', 'copper', 'coral',
+  'cost', 'cotton', 'couch', 'cover', 'coyote', 'crack', 'cream', 'cricket',
+  'crop', 'cruel', 'cry', 'cube', 'culture', 'cup', 'curious', 'cushion',
+  'cute', 'cycle', 'dad', 'daisy', 'damage', 'dance', 'dare', 'dash',
+  'data', 'dawn', 'day', 'deal', 'debate', 'decade', 'deep', 'defend',
+  'degree', 'delay', 'demand', 'denial', 'depart', 'derive', 'desert', 'detail',
+  'develop', 'diagram', 'dice', 'diesel', 'differ', 'digital', 'dinner', 'direct',
+  'disease', 'divert', 'dizzy', 'doctor', 'dog', 'doll', 'domain', 'donate',
+  'door', 'dose', 'double', 'dove', 'draft', 'dream', 'drift', 'drop',
+  'drum', 'dry', 'duck', 'dumb', 'dune', 'during', 'dust', 'duty',
+  'dwarf', 'dynamic', 'eager', 'early', 'easily', 'echo', 'ecology', 'edge',
+  'edit', 'educate', 'effort', 'egg', 'eight', 'either', 'elbow', 'elder',
+  'elegant', 'elite', 'else', 'embark', 'emerge', 'emotion', 'employ', 'enable',
+  'end', 'enemy', 'enforce', 'engage', 'enhance', 'enjoy', 'enlist', 'enough',
+  'enrich', 'ensure', 'enter', 'episode', 'equal', 'era', 'erode', 'error',
+];

@@ -22,6 +22,13 @@ Still in development. The IntelliJ support below is a **beta**.
   same Claude Code connection as VS Code. Requires Node.js 18 or later; checked
   with JetBrains' Plugin Verifier against 2023.1 and 2025.2.
 
+- vault-pane, the Claude Code mod, works without the extension: it carries the
+  bridge and draws the owner's decisions itself. What the vault tells Claude no
+  longer assumes VS Code, and its guard also covers the mod's copy of the bridge.
+- vault-pane's bar above the prompt: a searchable list of keys that inserts a
+  key's marker, a form to create a key on the spot (masked value, MCP box), and
+  the quotas with their reset times. On Desktop the new-key fields and the search
+  fields share one design.
 - Groups and separators in the vault panel. Groups exist empty or filled, fold
   and unfold, and keep their order; separators carry an optional title. Drag and
   drop for keys, groups and separators, Move up / Move down in the menus, a group

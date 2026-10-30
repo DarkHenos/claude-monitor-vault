@@ -26,6 +26,10 @@ jobs:
           node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
       - name: The bridge ships every file it requires
         run: node tests/bridge-files.js
+      - name: vault-pane works without VS Code
+        run: |
+          node tests/vault-pane-standalone.js
+          node tests/vault-pane-owner.js
       - name: Release metadata and documentation assets are consistent
         run: node scripts/check-release.js
       - name: Shared memory, quota transport and assistant workflows

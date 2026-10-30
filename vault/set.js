@@ -215,7 +215,7 @@ try {
     } else if (r.status === 'applied') {
       for (const k of r.keys) say(k.name + ': ' + scopeOf(k) + '.');
     } else {
-      say('This needs the user (' + r.why + '): a request is waiting in VSCode for ' +
+      say('This needs the user (' + r.why + '): a request is waiting in Claude Vault (VS Code or the pane) for ' +
         r.request.names.join(', ') + '.');
       const answer = waitFor(r.request.rid);
       if (answer === 'approved') {
@@ -232,7 +232,7 @@ try {
         process.stderr.write('claude-vault: ' + GONE_TEXT + '\n');
         failed = true;
       } else {
-        say('The user has not answered yet; the request is still waiting in VSCode. Nothing ' +
+        say('The user has not answered yet; the request is still waiting in Claude Vault. Nothing ' +
           'has changed. Do not send it again; tell the user it is pending.');
       }
     }
