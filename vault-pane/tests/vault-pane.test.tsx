@@ -146,29 +146,41 @@ test('a cloud session says the vault stays on the computer, and keeps the quotas
   await ui.unmount()
 })
 
-test('a pane left undrawn at start says to type /vault, and /vault clears it', async ($, on) => {
+test('a pane left undrawn at start shows a launcher above the prompt that opens it', async ($, on) => {
   const clock = world(on)
-  const statuses: (string | undefined)[] = []
+  const opens: unknown[] = []
   let isAsked = false
   on('command.register', () => ({ value: { command: 'vault' } }))
-  on('ui.open', () => ({ value: isAsked ? { isPlaced: true } : { isPlaced: false, reason: 'narrow' } }))
-  on('ui.status', (_: unknown, e: { text?: string }) => {
-    statuses.push(e.text)
-    return { value: {} }
+  on('ui.open', (_: unknown, e: unknown) => {
+    opens.push(e)
+    return { value: isAsked ? { isPlaced: true } : { isPlaced: false, reason: 'narrow' } }
   })
-  on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: [] } }))
+  on('session.usage', () => ({
+    value: { startedAt: 0, context: {}, rateLimits: [{ kind: 'five_hour', percentUsed: 12 }] },
+  }))
   on('process.run', () => ({
     value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  // Stands for the engine's own band once the launcher steps aside.
+  on('ui.render', ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await clock.settle()
-  expect(statuses.at(-1)).toMatch(/\/vault/)
+
+  const band = await $.ui.mount({ plugin: 'vault-pane', component: 'AbovePrompt', surface: 'desktop', props: { hasSurvey: false } } as any)
+  expect(await band.find({ key: 'launch' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /12 %/ })).toBeDefined()
 
   isAsked = true
-  await $.command.run({ command: 'vault', args: '' })
+  await band.press({ key: 'launch' })
   await clock.settle()
-  expect(statuses.at(-1)).toBeUndefined()
+  expect(opens.length).toBe(2)
+  expect(await band.find({ key: 'launch' })).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /engine/ })).toBeDefined()
+  await band.unmount()
 })
 
 test('an older bridge still lists the names', async ($, on) => {

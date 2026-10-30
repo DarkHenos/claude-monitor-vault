@@ -24,7 +24,9 @@ In Claude Desktop, where `/plugin` does not run: click **+** next to the prompt 
 
 ## Use
 
-- The pane opens with each session. Close it and it stays closed; `/vault` brings it back.
+- The pane opens with each session, docked beside the chat when the window is wide enough.
+- When it is not shown, a **🔐 Claude Vault** button sits above the prompt with the quotas beside it: click it to open the pane. `/vault` does the same.
+- Close the pane and it stays closed in later sessions until you click the button or type `/vault`.
 - Click a key to insert its `{{vault:NAME}}` marker in your message.
 - Click a group to fold or unfold it.
 - It refreshes every 30 seconds, after any command that touches the vault bridge, and with *Refresh*.
