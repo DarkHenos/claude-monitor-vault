@@ -1,0 +1,14 @@
+{
+  "name": "claude-monitor-vault",
+  "owner": { "name": "DarkHenos" },
+  "metadata": {
+    "description": "Claude Code mods from Claude Monitor & Vault: the vault and the quotas in a pane beside the chat."
+  },
+  "plugins": [
+    {
+      "name": "vault-pane",
+      "source": "./vault-pane",
+      "description": "A pane beside the chat: the Claude Vault keys (names only), their groups and MCP access, and the Claude quotas."
+    }
+  ]
+}

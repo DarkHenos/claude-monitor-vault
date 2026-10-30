@@ -64,6 +64,20 @@ returned for the connected account, not every limit on the ChatGPT website.*
 For a downloaded build, use **Extensions → ··· → Install from VSIX** and select
 `claude-monitor-vault-1.2.0.vsix`.
 
+## A pane beside the Claude Code chat
+
+**vault-pane** is a Claude Code mod that shows the vault (key names only, groups,
+MCP access) and the Claude quotas in a pane beside the chat, in the terminal, in
+VS Code and in Claude Desktop. Install it at the prompt of a Claude Code session:
+
+```
+/plugin install vault-pane --marketplace DarkHenos/claude-monitor-vault
+```
+
+In Claude Desktop: **+** next to the prompt box, **Plugins**, **Add marketplace**
+with `DarkHenos/claude-monitor-vault`, then **Add plugin**. Details in
+[vault-pane/README.md](vault-pane/README.md).
+
 ## Bring project knowledge to the next session
 
 <img src="media/marketplace/memory.png" alt="Memory workflow: discover linked Markdown files, review the inventory and file differences, then share project notes through CLAUDE.md and AGENTS.md." width="960">

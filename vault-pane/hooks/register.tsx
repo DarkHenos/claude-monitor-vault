@@ -35,6 +35,7 @@ const TEXTS = {
     inserted: (name: string) => `{{vault:${name}}} inserted.`,
     noNode: 'Node.js was not found on the PATH: the vault cannot be listed.',
     noBridge: 'The vault bridge is not installed: open VS Code once with the extension.',
+    remote: 'Cloud session: the vault stays on your computer and is not listed here. Quotas still show.',
     oldBridge: 'Groups and MCP access show once the extension has updated the vault bridge.',
     session: 'Session',
     week: 'Week',
@@ -54,6 +55,7 @@ const TEXTS = {
     inserted: (name: string) => `{{vault:${name}}} inséré.`,
     noNode: 'Node.js est introuvable dans le PATH : impossible de lister le coffre.',
     noBridge: "Le pont du coffre n'est pas installé : ouvrez VS Code une fois avec l'extension.",
+    remote: 'Session cloud : le coffre reste sur votre ordinateur et ne peut pas être listé ici. Les quotas restent affichés.',
     oldBridge: "Groupes et accès MCP s'afficheront quand l'extension aura mis à jour le pont du coffre.",
     session: 'Session',
     week: 'Semaine',
@@ -110,6 +112,12 @@ async function bridge($: EngineInterface): Promise<string> {
   return `${home}/.claude/claude-vault-bridge/list.js`
 }
 
+// A cloud session runs in a container: the bridge lives on the person's own
+// computer, so its absence there is expected, not something to install.
+async function missing($: EngineInterface): Promise<string> {
+  return (await $.env.get('CLAUDE_CODE_REMOTE')) === 'true' ? T.remote : T.noBridge
+}
+
 let isBusy = false
 
 async function refresh($: EngineInterface): Promise<void> {
@@ -127,7 +135,7 @@ async function refresh($: EngineInterface): Promise<void> {
         isOld = true
       }
       if (ran.exitCode === 0) next = { items: parse(ran.stdout), note: isOld ? T.oldBridge : undefined, at: Date.now() }
-      else if (/Cannot find module/.test(ran.stderr)) next = { items: [], error: T.noBridge, at: Date.now() }
+      else if (/Cannot find module/.test(ran.stderr)) next = { items: [], error: await missing($), at: Date.now() }
       else next = { items: [], error: ran.stderr.trim().split('\n')[0] || `exit ${ran.exitCode}`, at: Date.now() }
     } catch {
       next = { items: [], error: T.noNode, at: Date.now() }
