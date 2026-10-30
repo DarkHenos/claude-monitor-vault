@@ -146,6 +146,31 @@ test('a cloud session says the vault stays on the computer, and keeps the quotas
   await ui.unmount()
 })
 
+test('a pane left undrawn at start says to type /vault, and /vault clears it', async ($, on) => {
+  const clock = world(on)
+  const statuses: (string | undefined)[] = []
+  let isAsked = false
+  on('command.register', () => ({ value: { command: 'vault' } }))
+  on('ui.open', () => ({ value: isAsked ? { isPlaced: true } : { isPlaced: false, reason: 'narrow' } }))
+  on('ui.status', (_: unknown, e: { text?: string }) => {
+    statuses.push(e.text)
+    return { value: {} }
+  })
+  on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: [] } }))
+  on('process.run', () => ({
+    value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  expect(statuses.at(-1)).toMatch(/\/vault/)
+
+  isAsked = true
+  await $.command.run({ command: 'vault', args: '' })
+  await clock.settle()
+  expect(statuses.at(-1)).toBeUndefined()
+})
+
 test('an older bridge still lists the names', async ($, on) => {
   const clock = world(on)
   on('command.register', () => ({ value: { command: 'vault' } }))

@@ -26,6 +26,7 @@ const TEXTS = {
     title: 'Claude Vault',
     describe: 'Show the Claude Vault pane: key names, groups, MCP access and quotas',
     opened: 'Claude Vault pane opened.',
+    waiting: 'Claude Vault: type /vault to open the pane',
     keys: (n: number, mcp: number) => `${n} key${n === 1 ? '' : 's'} · ${mcp} for MCP`,
     empty: 'The vault is empty. Create a key in the Claude Vault view.',
     ungrouped: 'Ungrouped',
@@ -46,6 +47,7 @@ const TEXTS = {
     title: 'Claude Vault',
     describe: 'Affiche le panneau Claude Vault : noms des clés, groupes, accès MCP et quotas',
     opened: 'Panneau Claude Vault ouvert.',
+    waiting: 'Claude Vault : tapez /vault pour ouvrir le panneau',
     keys: (n: number, mcp: number) => `${n} clé${n > 1 ? 's' : ''} · ${mcp} pour MCP`,
     empty: 'Le coffre est vide. Créez une clé dans la vue Claude Vault.',
     ungrouped: 'Sans groupe',
@@ -177,8 +179,11 @@ function severity(percent: number): 'success' | 'warning' | 'error' {
   return percent >= 90 ? 'error' : percent >= 75 ? 'warning' : 'success'
 }
 
+// Opened on its own (session start), a pane is only drawn on a wide enough
+// window; a person's /vault places it at any width. Until then, say how.
 async function open($: EngineInterface): Promise<void> {
-  await $.ui.open({ id: PANE, title: T.title })
+  const opened = await $.ui.open({ id: PANE, title: T.title })
+  $.ui.status(opened.isPlaced ? undefined : T.waiting)
 }
 
 export const register: Register = on => {
