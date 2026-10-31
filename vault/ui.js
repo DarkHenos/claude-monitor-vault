@@ -1382,12 +1382,19 @@ function activateVault(context, version, onChange) {
     'separator-add': t('Separator added'), 'separator-edit': t('Separator edited'),
     'separator-remove': t('Separator removed'), 'layout-move': t('Layout reordered'),
     'mcp-request': t('MCP access requested'), 'mcp-approved': t('MCP request approved'),
-    'mcp-rejected': t('MCP request refused'), 'mcp-withdrawn': t('MCP request withdrawn')
+    'mcp-rejected': t('MCP request refused'), 'mcp-withdrawn': t('MCP request withdrawn'),
+    'transfer-out': t('Transfer string created'), 'transfer-in': t('Transfer string imported'),
+    'recovery-create': t('Recovery phrase created'), 'recovery-replace': t('Recovery phrase replaced'),
+    'recovery-show': t('Recovery phrase displayed'), 'recovery-activate': t('Earlier recovery phrase active again'),
+    'recovery-off': t('Recovery phrase turned off')
   };
   // Three families: what exposes a value, what modifies the vault, and what happens
   // on its own. That is the useful reading when looking for who touched what.
   const EVENT_CLASS = {
     use: 'lecture', reveal: 'alerte', 'revoke-all': 'alerte',
+    'transfer-out': 'alerte', 'recovery-show': 'alerte', 'recovery-replace': 'alerte',
+    'recovery-activate': 'alerte', 'recovery-off': 'alerte',
+    'transfer-in': 'ecriture', 'recovery-create': 'ecriture',
     create: 'ecriture', replace: 'ecriture', delete: 'ecriture',
     ttl: 'ecriture', mcp: 'ecriture',
     'replace-request': 'ecriture', 'mcp-request': 'ecriture',
@@ -1406,6 +1413,7 @@ function activateVault(context, version, onChange) {
     if (!e.detail) return '';
     if (/^mcp-/.test(e.event) && /^[0-9a-f-]{20,}$/i.test(String(e.detail))) return '';
     if (e.event === 'group-delete') return t('{0} key(s) left ungrouped', String(e.detail));
+    if (e.event === 'transfer-out' || e.event === 'transfer-in') return t('{0} key(s)', String(e.detail));
     if (e.event === 'group-rename') return t('was {0}', String(e.detail));
     if (e.event === 'layout-move') {
       return isFinite(Number(e.detail)) ? t('now in position {0}', String(Number(e.detail) + 1)) : '';
@@ -1631,6 +1639,10 @@ function activateVault(context, version, onChange) {
       if (m.type === 'recNew') recoveryCreate().then(redraw);
       if (m.type === 'recUse') recoveryRestoreFlow().then(redraw);
       if (m.type === 'recOff') recoveryOff().then(redraw);
+      if (m.type === 'recShow') recoveryShowFlow().then(redraw);
+      if (m.type === 'recHist') recoveryHistoryFlow().then(redraw);
+      if (m.type === 'trfOut') transferOut().then(redraw);
+      if (m.type === 'trfIn') transferIn().then(redraw);
     });
     settingsPanel.onDidDispose(() => { settingsPanel = null; });
     context.subscriptions.push(settingsPanel);
@@ -1787,7 +1799,10 @@ ${p.tampered ? '<div class="etat">' + esc(t('The settings file was changed outsi
   function settingsHtml() {
     const d = getDefaults();
     const st = installer.status(version);
-    const rec = vault.recoveryStatus();
+    const rec = phraseInfo();
+    // The log rather than a field of its own: it already prunes itself, and it
+    // is the place someone looks when they did not expect the answer.
+    const lastTransfer = vault.auditLog(500).find(e => e.event === 'transfer-out');
     let exp = { path: null, at: null, present: false, at_file: null };
     try { exp = vault.exportStatus(); } catch (e) { /* no policy file yet */ }
     let binned = [];
@@ -1986,6 +2001,7 @@ ${p.tampered ? '<div class="etat">' + esc(t('The settings file was changed outsi
     <a href="#ia">${esc(t('What the AI may do'))}</a>
     <a href="#secours">${esc(t('Recovery phrase'))}</a>
     <a href="#sauvegarde">${esc(t('Backup file'))}</a>
+    <a href="#transfert">${esc(t('Transfer string'))}</a>
     <a href="#corbeille">${esc(t('Bin'))}</a>
     <div class="groupe">${esc(t('Preferences'))}</div>
     <a href="#usage">${esc(t('Usage tracking'))}</a>
@@ -2031,12 +2047,15 @@ ${aiPolicyCard()}
 
 <div class="carte${rec.enabled ? '' : ' ko'}" id="secours">
 <h3>${esc(t('Recovery phrase'))}<span class="pastille">${esc(rec.enabled ? t('active') : t('not set up'))}</span></h3>
-<div class="desc">${esc(t('A list of words, shown once, that unlocks a copy of the master key. It is not stored: keep it offline, away from this machine.'))}</div>
+<div class="desc">${esc(t('A list of words that unlocks a copy of the master key. Write it down and keep it offline, away from this machine. A sealed copy stays here so it can be displayed again, but it is lost along with this machine.'))}</div>
 <div class="pourquoi">${esc(rec.enabled
     ? t('The master key lives in this machine\'s secret store. Should that store be lost, a wiped profile or a rebuilt account, these words are what brings the vault back.')
     : t('Without it, losing this machine\'s secret store loses every key, backup file included, since that file is sealed with the same master key. It takes one minute and it is the single most useful thing on this page.'))}</div>
+${rec.enabled && rec.at ? '<div class="pourquoi">' + esc(phraseState(rec)) + '</div>' : ''}
 <div class="actions">
-  <button class="doux" id="recnew">${esc(rec.enabled ? t('Replace the phrase') : t('Create the backup key'))}</button>
+  ${rec.canShow ? '<button class="doux" id="recshow">' + esc(t('Show the phrase')) + '</button>' : ''}
+  <button class="doux" id="recnew">${esc(rec.enabled ? t('Generate a new phrase') : t('Create the backup key'))}</button>
+  ${rec.history.length > 1 ? '<button class="doux" id="rechist">' + esc(t('Phrase history')) + '</button>' : ''}
   <button class="doux" id="recuse">${esc(t('Recover with a phrase'))}</button>
   ${rec.enabled ? '<button class="doux danger pousse" id="recoff">' + esc(t('Turn it off')) + '</button>' : ''}
 </div>
@@ -2056,11 +2075,23 @@ ${aiPolicyCard()}
         : (exp.portable
             ? t('Last written {0}. Your recovery phrase opens it on any machine, so a dead disk or a new computer costs you nothing but the time to restore.', whenText(exp.at || exp.at_file))
             : t('Last written {0}. Only this machine can open it, which covers a deleted or corrupted vault. Create a recovery phrase and the same file opens anywhere.', whenText(exp.at || exp.at_file)))))}</div>
+${exp.path && exp.present && exp.phraseBehind ? '<div class="pourquoi">' + esc(t('This file does not carry your current recovery phrase yet: it still opens with the previous one. It catches up at the next change once the location is reachable.')) + '</div>' : ''}
 ${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
 <div class="actions">
   <button class="doux" id="expnew">${esc(exp.path ? t('Change location') : t('Create the backup file'))}</button>
   <button class="doux" id="expimp">${esc(t('Restore from a file'))}</button>
   ${exp.path ? '<button class="doux pousse" id="expoff">' + esc(t('Stop updating')) + '</button>' : ''}
+</div>
+</div>
+
+<div class="carte" id="transfert">
+<h3>${esc(t('Transfer string'))}</h3>
+<div class="desc">${esc(t('Every key in one long line of text, names included, encrypted with a password you choose. Paste it on another machine, give the password, and the keys join the ones already there.'))}</div>
+<div class="pourquoi">${esc(t('Only the keys and their own settings travel. For a full restore, with the access log, the bin and your settings, use the backup file.'))}</div>
+${lastTransfer ? '<div class="pourquoi">' + esc(t('Last string created {0}.', whenText(lastTransfer.at))) + '</div>' : ''}
+<div class="actions">
+  <button class="doux" id="trfout">${esc(t('Create a transfer string'))}</button>
+  <button class="doux" id="trfin">${esc(t('Import a transfer string'))}</button>
 </div>
 </div>
 
@@ -2489,6 +2520,10 @@ ${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
   $('recnew').addEventListener('click', function () { api.postMessage({ type: 'recNew' }); });
   $('recuse').addEventListener('click', function () { api.postMessage({ type: 'recUse' }); });
   if ($('recoff')) $('recoff').addEventListener('click', function () { api.postMessage({ type: 'recOff' }); });
+  if ($('recshow')) $('recshow').addEventListener('click', function () { api.postMessage({ type: 'recShow' }); });
+  if ($('rechist')) $('rechist').addEventListener('click', function () { api.postMessage({ type: 'recHist' }); });
+  $('trfout').addEventListener('click', function () { api.postMessage({ type: 'trfOut' }); });
+  $('trfin').addEventListener('click', function () { api.postMessage({ type: 'trfIn' }); });
 })();
 </script></body></html>`;
   }
@@ -2665,9 +2700,10 @@ ${entries.length
   //
   // The master key lives in the OS secret store, and that store can be lost:
   // a wiped profile, a reinstalled OS, a Windows account rebuilt after a
-  // failure. The phrase is the second door. It is shown ONCE — only the
-  // envelope it opens is written to disk — so everything here is built around
-  // that single showing: copy it, save it, then confirm.
+  // failure. The phrase is the second door. A copy sealed under the master key
+  // stays on this machine, so it can be displayed again and an accidental
+  // replacement undone, but only while this vault still opens: the paper is
+  // what counts the day the machine is gone.
 
   // Plain words on one line. Numbering them read as tidier, and it was worse:
   // what people actually do is select and copy, and numbers come along for the
@@ -2705,37 +2741,71 @@ ${entries.length
   }
 
   // Kept open until the user confirms, so saving AND copying is possible.
-  async function showPhrase(words) {
+  // `extra` is one more button and what it does; true from it closes the window.
+  async function showPhrase(words, title, extra) {
     const save = t('Save as .txt');
     const copy = t('Copy');
     const done = t('I have written them down');
+    const boutons = extra ? [save, copy, extra.label, done] : [save, copy, done];
     for (;;) {
       const answer = await vscode.window.showInformationMessage(
-        t('Your recovery phrase'),
+        title || t('Your recovery phrase'),
         {
           modal: true,
           detail: phraseText(words) + '\n\n' +
-            t('Shown once, and stored nowhere: neither you nor this extension can display it again. Anyone holding these words can open the vault.')
+            t('A sealed copy stays on this machine, so it can be displayed again while this vault opens. If the machine is lost, only what you wrote down remains. Anyone holding these words can open the vault.')
         },
-        save, copy, done);
+        ...boutons);
       if (answer === save) { await savePhraseFile(words); continue; }
       if (answer === copy) {
         await vscode.env.clipboard.writeText(words.join(' '));
         vscode.window.setStatusBarMessage(t('Phrase copied to the clipboard'), 4000);
         continue;
       }
+      if (extra && answer === extra.label && await extra.run()) return;
+      if (extra && answer === extra.label) continue;
       return;                                   // "written down", or dismissed
     }
   }
 
+  function phraseInfo() {
+    return has('recoveryDetails')
+      ? vault.recoveryDetails()
+      : Object.assign({ canShow: false, id: null, last: null, history: [] }, vault.recoveryStatus());
+  }
+
+  function phraseState(d) {
+    return d.last
+      ? t('Active since {0}, last word: {1}.', whenText(d.at), d.last)
+      : t('Active since {0}. It dates from before copies were kept, so it cannot be displayed.', whenText(d.at));
+  }
+
+  // Said out loud rather than left to the panel: "the new phrase opens the file"
+  // is what someone just wrote down, and an unplugged drive makes that false.
+  function warnIfFileBehind() {
+    const st = vault.exportStatus();
+    if (st.path && st.phraseBehind) {
+      vscode.window.showWarningMessage(
+        t('The backup file at {0} could not be rewritten: it still opens with the previous phrase. It catches up at the next change once the location is reachable.', st.path));
+    }
+  }
+
+  // The current phrase is not asked for: whoever replaces it has often lost it,
+  // and that is the moment the feature exists for. What protects instead is
+  // knowing exactly what is being replaced, and being able to undo it.
   async function recoveryCreate() {
     try {
-      if (vault.recoveryStatus().enabled) {
-        const go = t('Replace the phrase');
+      const d = phraseInfo();
+      if (d.enabled) {
+        const go = t('Generate a new phrase');
         const yes = await vscode.window.showWarningMessage(
-          t('A recovery phrase already exists.'),
+          t('Replace the current recovery phrase?'),
           { modal: true,
-            detail: t('Creating a new one makes the previous phrase useless. Any copy you kept of it stops working.') },
+            detail: phraseState(d) + '\n\n' +
+              (d.canShow
+                ? t('Your current phrase is not needed. Once replaced, it stops opening this vault and the backup file. It stays in the phrase history, where it can be made active again.')
+                : t('Your current phrase is not needed. Once replaced, it stops opening this vault and the backup file, and this cannot be undone: it was never kept, so only its date stays in the history.')) + '\n\n' +
+              t('If you are replacing it because it leaked: copies of the backup file made earlier still open with it, and the master key does not change. Delete those copies.') },
           go);
         if (yes !== go) return;
       }
@@ -2743,7 +2813,77 @@ ${entries.length
       await showPhrase(words);
       words.fill('');
       notify();
+      warnIfFileBehind();
     } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  async function recoveryShowFlow() {
+    try {
+      const d = phraseInfo();
+      if (!d.canShow) {
+        return vscode.window.showInformationMessage(d.enabled
+          ? t('This phrase dates from before copies were kept, so it cannot be displayed. If you no longer have it, generate a new one: the old one is not asked for.')
+          : t('No recovery phrase has been created yet.'));
+      }
+      const go = t('Display it');
+      const yes = await vscode.window.showWarningMessage(
+        t('Display the recovery phrase?'),
+        { modal: true,
+          detail: phraseState(d) + '\n\n' +
+            t('Check that nobody can see your screen: no screen sharing, no recording. The display will be recorded in the log.') },
+        go);
+      if (yes !== go) return;
+      const words = vault.recoveryShow(d.id);
+      await showPhrase(words);
+      words.fill('');
+      notify();
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  // Earlier phrases are what still opens earlier copies of the backup file, and
+  // what undoes a replacement nobody meant to make.
+  async function recoveryHistoryFlow() {
+    try {
+      const d = phraseInfo();
+      if (!d.history.length) {
+        return vscode.window.showInformationMessage(t('No recovery phrase has been created yet.'));
+      }
+      const picked = await vscode.window.showQuickPick(d.history.map(h => ({
+        label: h.current ? t('Active phrase') : t('Replaced {0}', whenText(h.replacedAt)),
+        description: h.createdAt ? t('created {0}', whenText(h.createdAt)) : '',
+        detail: h.canShow ? t('Last word: {0}', h.last) : t('Not kept: created before this history existed'),
+        item: h
+      })), { title: t('Phrase history'), placeHolder: t('Choose a phrase to display it') });
+      if (!picked || !picked.item.canShow) return;
+      const h = picked.item;
+      const go = t('Display it');
+      const yes = await vscode.window.showWarningMessage(
+        t('Display the recovery phrase?'),
+        { modal: true,
+          detail: t('Check that nobody can see your screen: no screen sharing, no recording. The display will be recorded in the log.') },
+        go);
+      if (yes !== go) return;
+      const words = vault.recoveryShow(h.id);
+      await showPhrase(words, h.current ? t('Your recovery phrase') : t('Phrase replaced {0}', whenText(h.replacedAt)),
+        h.current ? null : { label: t('Make it active again'), run: () => recoveryReactivate(h) });
+      words.fill('');
+      notify();
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  async function recoveryReactivate(h) {
+    const go = t('Make it active again');
+    const yes = await vscode.window.showWarningMessage(
+      t('Make this phrase active again?'),
+      { modal: true,
+        detail: t('It opens this vault and the backup file again. The phrase active today stops doing so, and stays in the history.') },
+      go);
+    if (yes !== go) return false;
+    vault.recoveryActivate(h.id);
+    notify();
+    vscode.window.setStatusBarMessage(t('Earlier recovery phrase active again'), 4000);
+    warnIfFileBehind();
+    return true;
   }
 
   async function recoveryRestoreFlow() {
@@ -2773,13 +2913,179 @@ ${entries.length
     const yes = await vscode.window.showWarningMessage(
       t('Turn off the recovery phrase?'),
       { modal: true,
-        detail: t('The phrase stops opening this vault. If the master key is lost afterwards, nothing will bring the keys back.') },
+        detail: t('The phrase stops opening this vault, and the copies kept on this machine are erased. If the master key is lost afterwards, nothing will bring the keys back.') },
       off);
     if (yes !== off) return;
     try {
       vault.recoveryDisable();
       notify();
       vscode.window.setStatusBarMessage(t('Recovery phrase turned off'), 4000);
+      warnIfFileBehind();
+    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+  }
+
+  // ------------------------------------------------------- transfer string
+  //
+  // Every key, in one line of text a password opens. The password goes through
+  // these input boxes and nowhere else: not the webview, not a command argument,
+  // nothing an assistant could read or be handed.
+
+  async function transferOut() {
+    let n = 0;
+    try { n = vault.listFast().filter(k => !k.expired).length; }
+    catch (e) { return vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+    if (!n) return vscode.window.showInformationMessage(t('The vault holds no key to transfer.'));
+
+    const go = t('Choose a password');
+    const yes = await vscode.window.showWarningMessage(
+      t('Create a transfer string with {0} key(s)?', String(n)),
+      { modal: true,
+        detail: t('Every key leaves this vault in one line of text, protected only by the password you choose next. Anyone holding both can read them all. This will be recorded in the log.') },
+      go);
+    if (yes !== go) return;
+
+    const password = await vscode.window.showInputBox({
+      title: t('Password of the transfer string'),
+      prompt: t('It is stored nowhere and nothing can recover it. A few unrelated words make a good one.'),
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: v => {
+        const bad = vault.transferPasswordIssue(v);
+        return bad ? errText(bad) : null;
+      }
+    });
+    if (!password) return;
+    const again = await vscode.window.showInputBox({
+      title: t('Confirm the password'),
+      prompt: t('Type the same password again.'),
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: v => (v === password ? null : t('The two passwords differ.'))
+    });
+    if (again !== password) return;
+
+    let r;
+    try { r = await vault.transferBuild(password); }
+    catch (e) { return vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+    notify();
+    if (r.failed.length) {
+      vscode.window.showWarningMessage(
+        t('These keys could not be decrypted and are not in the string: {0}', r.failed.join(', ')));
+    }
+
+    const copy = t('Copy the string');
+    const save = t('Save as .txt');
+    const done = t('Done');
+    for (;;) {
+      const answer = await vscode.window.showInformationMessage(
+        t('Transfer string ready: {0} key(s)', String(r.count)),
+        { modal: true,
+          detail: t('{0} characters. On the other machine, copy it, then run Import a transfer string.', String(r.text.length)) + '\n\n' +
+            t('Send the password another way than the string, and paste neither into an assistant chat. The string shows the keys as they are now: it does not follow later changes.') },
+        copy, save, done);
+      if (answer === copy) {
+        await vscode.env.clipboard.writeText(r.text);
+        vscode.window.setStatusBarMessage(t('String copied to the clipboard'), 4000);
+        continue;
+      }
+      if (answer === save) {
+        const os = require('os');
+        const target = await vscode.window.showSaveDialog({
+          defaultUri: vscode.Uri.file(path.join(os.homedir(), 'claude-vault-transfer.txt')),
+          filters: { 'Text': ['txt'] },
+          saveLabel: t('Save the string')
+        });
+        if (target) {
+          try {
+            fs.writeFileSync(target.fsPath, r.text, { encoding: 'utf8', mode: 0o600 });
+            vscode.window.setStatusBarMessage(t('String saved to {0}', target.fsPath), 4000);
+          } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+        }
+        continue;
+      }
+      return;
+    }
+  }
+
+  // Short enough to read in a dialog, and it still says how many were left out.
+  function namesText(names) {
+    const shown = names.slice(0, 12).join(', ');
+    return names.length > 12 ? t('{0} and {1} more', shown, String(names.length - 12)) : shown;
+  }
+
+  async function transferIn() {
+    // Whoever is here has usually just copied it, and a long paste into a small
+    // box is the part of this that goes wrong.
+    const isString = v => { try { return vault.transferCheck(v); } catch (e) { return false; } };
+    let text = '';
+    try {
+      const clip = await vscode.env.clipboard.readText();
+      if (isString(clip)) text = clip;
+    } catch (e) { /* no clipboard here: the box below does the same job */ }
+    if (!text) {
+      text = await vscode.window.showInputBox({
+        title: t('Import a transfer string'),
+        prompt: t('Paste the string, all of it. A .txt file saved earlier holds it too.'),
+        ignoreFocusOut: true,
+        validateInput: v => {
+          if (!String(v || '').trim()) return t('Paste the string, all of it. A .txt file saved earlier holds it too.');
+          try { vault.transferCheck(v); return null; } catch (e) { return errText(e); }
+        }
+      });
+      if (!text) return;
+    }
+
+    let data = null;
+    let prompt = t('The password chosen when this string was created.');
+    while (!data) {
+      const password = await vscode.window.showInputBox({
+        title: t('Password of the transfer string'),
+        prompt,
+        password: true,
+        ignoreFocusOut: true,
+        validateInput: v => (v ? null : t('Enter the password.'))
+      });
+      if (!password) return;
+      try { data = await vault.transferOpen(text, password); }
+      catch (e) {
+        if (!e.wrongPassword) return vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e)));
+        prompt = errText(e);
+      }
+    }
+
+    try {
+      const p = vault.transferPreview(data);
+      if (!p.fresh.length && !p.conflicts.length) {
+        return vscode.window.showInformationMessage(
+          t('Nothing to import: the {0} key(s) of this string are already here with the same value.', String(p.same.length)));
+      }
+      const lines = [t('String created {0}.', whenText(p.at))];
+      if (p.fresh.length) lines.push(t('New: {0}', namesText(p.fresh)));
+      if (p.conflicts.length) lines.push(t('Different value here: {0}', namesText(p.conflicts)));
+      if (p.same.length) lines.push(t('Already here, same value: {0}', String(p.same.length)));
+      if (p.expired.length) lines.push(t('Expired, not imported: {0}', namesText(p.expired)));
+      if (p.invalid.length) lines.push(t('Unreadable, not imported: {0}', namesText(p.invalid)));
+      if (p.mcp) lines.push(t('{0} new key(s) arrive already allowed for MCP, as on the other machine.', String(p.mcp)));
+      if (p.conflicts.length) {
+        lines.push(t('A replaced key waits {0} days in the bin.', String(vault.TRASH_DAYS)));
+      }
+      lines.push(t('This machine keeps its master key, its settings and its other keys.'));
+
+      const keep = t('Keep the ones here');
+      const replace = t('Use the ones from the string');
+      const go = t('Import');
+      const boutons = p.conflicts.length ? (p.fresh.length ? [keep, replace] : [replace]) : [go];
+      const answer = await vscode.window.showWarningMessage(
+        t('Import {0} key(s)?', String(p.fresh.length + p.conflicts.length)),
+        { modal: true, detail: lines.join('\n\n') },
+        ...boutons);
+      if (!answer) return;
+
+      const r = vault.transferApply(data, answer === replace ? 'replace' : 'keep');
+      notify();
+      vscode.window.showInformationMessage(
+        t('Transfer done: {0} added, {1} replaced, {2} kept as they were.',
+          String(r.added), String(r.replaced), String(r.kept + r.same)));
     } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
   }
 
@@ -3087,7 +3393,8 @@ ${entries.length
     if (!info.opensLocally) {
       phrase = await vscode.window.showInputBox({
         title: t('Recovery phrase of this export'),
-        prompt: t('Type or paste the words, separated by spaces. Case and punctuation do not matter.'),
+        prompt: (info.phraseAt ? t('This file expects the phrase active since {0}.', whenText(info.phraseAt)) + ' ' : '') +
+          t('Type or paste the words, separated by spaces. Case and punctuation do not matter.'),
         password: true, ignoreFocusOut: true,
         validateInput: v => (String(v || '').trim() ? null : t('Enter your recovery phrase.'))
       });
@@ -3171,6 +3478,10 @@ ${entries.length
     vscode.commands.registerCommand('claudeVault.toggleConfirm', toggleConfirm),
     vscode.commands.registerCommand('claudeVault.recovery', recoveryCreate),
     vscode.commands.registerCommand('claudeVault.recoveryRestore', recoveryRestoreFlow),
+    vscode.commands.registerCommand('claudeVault.recoveryShow', recoveryShowFlow),
+    vscode.commands.registerCommand('claudeVault.recoveryHistory', recoveryHistoryFlow),
+    vscode.commands.registerCommand('claudeVault.transferOut', transferOut),
+    vscode.commands.registerCommand('claudeVault.transferIn', transferIn),
     vscode.commands.registerCommand('claudeVault.newGroup', newGroup),
     vscode.commands.registerCommand('claudeVault.newSeparator', newSeparator),
     vscode.commands.registerCommand('claudeVault.setGroup', setGroup),

@@ -2,7 +2,7 @@
   "name": "claude-monitor-vault",
   "displayName": "Claude Monitor & Vault + ChatGPT",
   "description": "Monitor Claude Code and ChatGPT / Codex usage, switch session models, share project memory and manage encrypted local secrets in VS Code.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "l10n": "./l10n",
   "publisher": "alexossart",
   "license": "MIT",
@@ -286,6 +286,30 @@
         "category": "%cat.vault%",
         "title": "%cmd.vault.recoveryRestore%",
         "icon": "$(history)"
+      },
+      {
+        "command": "claudeVault.recoveryShow",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.recoveryShow%",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "claudeVault.recoveryHistory",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.recoveryHistory%",
+        "icon": "$(history)"
+      },
+      {
+        "command": "claudeVault.transferOut",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.transferOut%",
+        "icon": "$(export)"
+      },
+      {
+        "command": "claudeVault.transferIn",
+        "category": "%cat.vault%",
+        "title": "%cmd.vault.transferIn%",
+        "icon": "$(desktop-download)"
       },
       {
         "command": "claudeVault.autoApprove",
@@ -782,7 +806,7 @@
     "@vscode/vsce": "^3.9.2"
   },
   "scripts": {
-    "test": "node tests/companion-colors.js && node tests/automatic-companion.js && node tests/companion.js && node tests/memory-links.js && node tests/updates.js && node tests/codex-client.js && node tests/companion-ui.js && node tests/vault-access.js && node tests/vault-mcp.js && node tests/bridge-files.js && node tests/vault-pane-standalone.js && node tests/vault-pane-owner.js &&node tests/l10n-shape.js",
+    "test": "node tests/companion-colors.js && node tests/automatic-companion.js && node tests/companion.js && node tests/memory-links.js && node tests/updates.js && node tests/codex-client.js && node tests/companion-ui.js && node tests/vault-access.js && node tests/vault-transfer.js && node tests/vault-mcp.js && node tests/bridge-files.js && node tests/vault-pane-standalone.js && node tests/vault-pane-owner.js &&node tests/l10n-shape.js",
     "package": "vsce package --pre-release",
     "build:logo": "node scripts/render-logo.js",
     "build:marketplace": "node scripts/build-marketplace.js",

@@ -14,7 +14,7 @@ local files. Your familiar Claude Monitor & Vault now includes optional Codex su
  · [User guide](docs/GUIDE.md) · [Release notes](CHANGELOG.md)
  · [Report an issue](https://github.com/DarkHenos/claude-monitor-vault/issues)
 
-**Version 1.2.0** · VS Code 1.106+ · IntelliJ IDEA and other JetBrains IDEs 2023.1+
+**Version 1.3.0** · VS Code 1.106+ · IntelliJ IDEA and other JetBrains IDEs 2023.1+
 ([beta](#intellij-idea-and-other-jetbrains-ides-beta)) · Windows, macOS and Linux ·
 English, French, Spanish, German and Portuguese.
 
@@ -131,6 +131,13 @@ or access mode. A deliberate disconnection is not automatically undone.
 Expiry, optional per-use confirmation, an access log, encrypted backups and
 recovery tools are available. Output redaction is best effort; a program receiving
 a secret can still transform or disclose it.
+
+### Move your keys with one line of text
+
+**Create a transfer string** turns every key into one long line of text, names
+included, encrypted with a password you choose. Paste it on another machine, give
+the password, and the keys join the ones already there, after a preview of what
+would change. The other machine keeps its own master key and settings.
 
 ### Groups and separators
 

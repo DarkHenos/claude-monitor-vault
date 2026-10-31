@@ -264,9 +264,11 @@ them.
 The master key is 32 random bytes held by your OS secret store, unique to this
 machine. Two things make it survivable:
 
-- **Recovery phrase.** 17 words, shown once and stored nowhere, that unlock a
-  copy of the master key. Needed if the OS secret store is ever lost: a wiped
-  profile, a reinstalled system, a rebuilt account.
+- **Recovery phrase.** 17 words that unlock a copy of the master key. Needed if
+  the OS secret store is ever lost: a wiped profile, a reinstalled system, a
+  rebuilt account. Write them down: a copy sealed under the master key stays on
+  this machine so they can be displayed again, but that copy is lost along with
+  the machine.
 - **Backup file** (`.cvault`). One encrypted file holding the whole vault: the
   keys, the access log, the bin and your settings. It is created on first launch
   and rewritten at every change, so it is never out of date. Move it wherever
@@ -282,6 +284,51 @@ Moving to a new computer is the file plus the words:
 ```
 Ctrl+Shift+P  >  Claude Vault: Restore from a file
 ```
+
+**Generating a new phrase** never asks for the current one, since whoever wants
+a new phrase has often lost the old one. What protects you instead:
+
+- The confirmation says when the current phrase was created and what its last
+  word is, so you know which sheet of paper you are about to make obsolete. The
+  last word is a checksum of the others and reveals nothing about them.
+- The backup file is rewritten at once, and you are told if that failed.
+- Replaced phrases stay in **Phrase history** (the last five), with their dates.
+  You can display one, because it still opens earlier copies of the backup file,
+  or make it active again if the replacement was a mistake.
+- Every creation, replacement and display goes in the access log.
+
+Replacing a phrase does not change the master key. If a phrase leaked, delete
+any earlier copy of the backup file: that copy still opens with the old words,
+and it holds the master key. A phrase created before version 1.3.0 was never
+stored and cannot be displayed. Type it once in **Recover with a phrase** and it
+can be from then on, or generate a new one.
+
+### Transfer string
+
+To move your keys without moving a file, **Create a transfer string** turns every
+key into one long line of text, names included, encrypted with a password you
+choose (scrypt, then AES-256-GCM; at least 12 characters). Nothing can be read
+from it without the password, not even how many keys it holds. On the other
+machine, copy the string and run **Import a transfer string**: it is picked up
+from the clipboard, and you see what would change before anything is written.
+
+| | Transfer string | Backup file |
+|---|---|---|
+| Opened by | a password you choose | the recovery phrase, or this machine |
+| Carries | keys and their own settings (note, group, expiry, MCP access) | the whole vault: log, bin, settings |
+| On arrival | joins the keys already there | replaces the vault, and the master key if another machine wrote it |
+| Stays up to date | no, it shows the keys as they were | yes, rewritten at every change |
+
+A key already there with the same value is left alone. With a different value you
+choose which one wins, and a replaced key waits 30 days in the bin. The receiving
+machine keeps its own master key and its own settings, including what the AI may
+do. Keys allowed for MCP on the first machine arrive allowed, and the confirmation
+says how many.
+
+The string can be guessed at offline by anyone who catches it, for as long as they
+like, so its strength is the password's. Send the password another way than the
+string. Creating and importing a string both go in the access log, and the settings
+window shows when the last string was created.
 
 ### Deleting, renaming, replacing
 
@@ -552,6 +599,10 @@ limits**.
 | Restore from a file | bring a vault in, on this machine or a new one |
 | Create the backup key | generate the 17-word recovery phrase |
 | Recover with a phrase | reopen the vault when the OS secret store is lost |
+| Show the recovery phrase | display the active phrase again, recorded in the log |
+| Recovery phrase history | see replaced phrases and their dates, display one or make it active again |
+| Create a transfer string | every key in one line of text, opened by a password |
+| Import a transfer string | add the keys of a string to this vault |
 | Open the bin | put back a key deleted in the last 30 days |
 | Check what is staged for commit | look for your secrets in the staged diff |
 | Rename a key / Replace the value | without ever showing the old value |

@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const zlib = require('zlib');
 const { spawnSync } = require('child_process');
 
 const VAULT_DIR = path.join(os.homedir(), '.claude', 'vault');
@@ -659,15 +660,28 @@ function exportStatus() {
     path: p.exportPath || null, at: p.exportAt || null, present: false, at_file: null,
     // Portable means: the file carries the envelope, so the phrase opens it
     // anywhere. Without it the file is still a backup, readable here.
-    portable: fs.existsSync(RECOVERY_PATH)
+    portable: fs.existsSync(RECOVERY_PATH),
+    phraseBehind: false
   };
   if (!st.path) return st;
   try {
     const s = fs.statSync(st.path);
     st.present = true;
     st.at_file = s.mtimeMs;
+    st.phraseBehind = exportPhraseBehind(st.path);
   } catch (e) { /* moved, unplugged, deleted */ }
   return st;
+}
+
+// The file carries its own copy of the envelope, so it can stay on the previous
+// phrase when a rewrite failed (drive unplugged). Saying "portable" then would
+// send someone to a new machine with words that do not open their file.
+function exportPhraseBehind(file) {
+  try {
+    const f = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const env = recoveryEnvelope();
+    return ((f.recovery && f.recovery.ct) || null) !== ((env && env.ct) || null);
+  } catch (e) { return false; }
 }
 
 // Called at startup. A safety net nobody switched on protects nobody, so the
@@ -679,7 +693,10 @@ function exportEnsure() {
   try {
     const p = exportFields(readPolicyFile());
     if (p.exportPath) {
-      if (fs.existsSync(p.exportPath)) return { created: false, path: p.exportPath };
+      if (fs.existsSync(p.exportPath)) {
+        if (exportPhraseBehind(p.exportPath)) exportRefresh();
+        return { created: false, path: p.exportPath };
+      }
       // Configured but gone: the drive was unplugged, or someone tidied up.
       // Writing it again where it was told to is the least surprising answer.
       exportRefresh();
@@ -719,6 +736,8 @@ function exportInspect(text) {
   return {
     count: Number(f.count) || 0, at: Number(f.at) || 0, opensLocally: local,
     portable: !!(f.recovery && f.recovery.ct),
+    // Which phrase it expects: someone holding several sheets needs the date.
+    phraseAt: (f.recovery && Number(f.recovery.at)) || 0,
     here, survives: local          // same key here: the replaced keys can be binned
   };
 }
@@ -736,6 +755,7 @@ function exportImport(text, phrase) {
 
   let master = null;
   let mode = 'local';
+  let entropy = null;
   // 1. this machine's own key, if it happens to be the right one
   try {
     const local = masterKey();
@@ -753,7 +773,7 @@ function exportImport(text, phrase) {
       throw fail('this file was written as a backup on another machine, with no recovery phrase: nothing can open it here');
     }
     if (!phrase) throw fail('this export was written by another machine: enter its recovery phrase');
-    const entropy = phraseDecode(phrase);
+    entropy = phraseDecode(phrase);
     const rk = recoveryKey(entropy, unb64(r.salt));
     const d = crypto.createDecipheriv('aes-256-gcm', rk, unb64(r.iv));
     d.setAAD(Buffer.from(RECOVERY_INFO, 'utf8'));
@@ -800,8 +820,9 @@ function exportImport(text, phrase) {
     // The local envelope, if there was one, wraps the key we have just replaced.
     // Left alone, recoveryStatus() would keep saying "active" while the phrase
     // it names restores a key that opens nothing. The imported envelope is the
-    // right one: it is opened by the words the user just typed.
-    try { writeAtomic(RECOVERY_PATH, JSON.stringify(f.recovery)); }
+    // right one: it is opened by the words the user just typed. The history was
+    // sealed under the replaced key, so it restarts from those same words.
+    try { recoveryAdopt(entropy, f.recovery, true); }
     catch (e) { /* unwritable: the vault is fine, the phrase is the file's */ }
   }
   const v = {
@@ -882,6 +903,294 @@ function exportOpen(f, master) {
 
 function exportOpens(f, master) {
   try { return exportOpen(f, master) !== null; } catch (e) { return false; }
+}
+
+// ---------------------------------------------------------- transfer string
+//
+// One line of text that carries every key to another machine, for a person who
+// wants to paste something rather than move a file.
+//
+// It is not the export file in another shape. The file is sealed under the
+// master key, so restoring it elsewhere replaces that machine's key and costs
+// whatever was sealed with the old one. Here the values are opened, the set is
+// encrypted under a key derived from a password, and the receiving machine seals
+// them again under ITS OWN key: what it already holds survives, and no master
+// key ever travels.
+//
+// Only keys and their own settings travel. The policy, the log and the bin stay
+// where they are: a string that could relax what an assistant may do on the
+// receiving machine would be a much larger thing than a list of keys.
+//
+// The phrase can use HKDF because its 128 bits are random. A password is chosen
+// by a person, and this string is meant to go through mail or chat, where anyone
+// who catches it can guess for as long as they like. That is exactly what a
+// costly derivation exists for: scrypt at the strength OWASP recommends.
+//
+//   cvault1.<base64url of: salt(16) logN r p | iv(12) tag(16) ciphertext | sum(4)>
+//
+// Nothing is readable without the password, not even the number of keys. The
+// sum protects nothing and only tells a truncated paste from a wrong password.
+
+const TRANSFER_PREFIX = 'cvault1.';
+const TRANSFER_INFO = 'claude-vault-transfer-v1';
+const TRANSFER_LOG_N = 17;                  // about 134 MB and half a second
+const TRANSFER_LOG_N_MAX = 18;              // a forged string cannot ask for more
+const TRANSFER_R = 8;
+const TRANSFER_P = 1;
+const TRANSFER_HEAD = 19;                   // salt + logN + r + p
+const TRANSFER_SUM = 4;
+const TRANSFER_MAX_CLEAR = 16 * 1024 * 1024;
+const TRANSFER_PASSWORD_MIN = 12;
+
+// A second layer on what the input box checks, so that no path through the core
+// can seal a whole vault under a password of four letters.
+function transferPasswordIssue(password) {
+  const p = String(password == null ? '' : password);
+  // Two different strings on two different screens, invisible behind the dots.
+  if (p !== p.trim()) return fail('the password cannot start or end with a space');
+  const chars = Array.from(p);
+  if (chars.length < TRANSFER_PASSWORD_MIN) {
+    return fail('the password needs at least {0} characters', TRANSFER_PASSWORD_MIN);
+  }
+  if (new Set(chars).size < 6) return fail('this password is too repetitive: use more different characters');
+  return null;
+}
+
+// Asynchronous on purpose: half a second of scrypt must not freeze the editor.
+// NFKC, because the same accented password can reach two machines encoded two ways.
+function transferKey(password, salt, logN) {
+  const N = Math.pow(2, logN);
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(String(password).normalize('NFKC'), salt, 32,
+      { N, r: TRANSFER_R, p: TRANSFER_P, maxmem: 256 * N * TRANSFER_R },
+      (e, key) => (e ? reject(e) : resolve(key)));
+  });
+}
+
+function transferSum(body) {
+  return crypto.createHash('sha256').update(body).digest().subarray(0, TRANSFER_SUM);
+}
+
+// Reads the values under the lock, and logs it: a whole vault is about to leave
+// in one piece, the one thing a person checking this log would want to find.
+// A transfer is the owner's gesture, so like reveal() it does not count as a use,
+// but a capped key arrives with what is left of its cap, not with a fresh one.
+function transferSnapshot() {
+  const v = loadRaw();
+  const groups = groupIndex();
+  const keys = [];
+  const failed = [];
+  for (const id of Object.keys(v.secrets)) {
+    const s = v.secrets[id];
+    if (isExpired(s)) continue;
+    let value;
+    try { value = open(s); } catch (e) { failed.push(s.name); continue; }
+    keys.push({
+      name: s.name, value, policy: s.policy, expiresAt: s.expiresAt || null,
+      maxUses: s.maxUses ? Math.max(1, s.maxUses - (s.uses || 0)) : null,
+      mcp: !!s.mcp, mcpServers: s.mcpServers || null, pub: !!s.pub, confirm: !!s.confirm,
+      note: s.note || null, group: (s.groupId && groups.get(s.groupId)) || null
+    });
+  }
+  if (!keys.length) throw fail('the vault holds no key to transfer');
+  audit(v, 'transfer-out', null, String(keys.length), 'user');
+  saveRaw(v, false);
+  const layoutItems = readLayout().items.map(i => (i.type === 'group'
+    ? { type: 'group', name: i.name, collapsed: !!i.collapsed }
+    : { type: 'separator', label: i.label || null }));
+  return { keys, failed, layout: layoutItems };
+}
+
+async function transferBuild(password) {
+  const bad = transferPasswordIssue(password);
+  if (bad) throw bad;
+  const snap = transferSnapshot();
+  const clear = Buffer.from(JSON.stringify({
+    v: 1, at: Date.now(), keys: snap.keys, layout: snap.layout
+  }), 'utf8');
+  const packed = zlib.deflateRawSync(clear);
+  clear.fill(0);
+
+  const head = Buffer.concat([crypto.randomBytes(16),
+    Buffer.from([TRANSFER_LOG_N, TRANSFER_R, TRANSFER_P])]);
+  const key = await transferKey(password, head.subarray(0, 16), TRANSFER_LOG_N);
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', key, iv);
+  c.setAAD(Buffer.concat([Buffer.from(TRANSFER_INFO, 'utf8'), head]));
+  const ct = Buffer.concat([c.update(packed), c.final()]);
+  key.fill(0);
+  packed.fill(0);
+
+  const body = Buffer.concat([head, iv, c.getAuthTag(), ct]);
+  const text = TRANSFER_PREFIX + Buffer.concat([body, transferSum(body)]).toString('base64url');
+  return { text, count: snap.keys.length, failed: snap.failed };
+}
+
+// Mail clients wrap long lines, hence the whitespace. Runs before any password
+// is asked for: "this string is cut" is more use than "wrong password".
+function transferParse(text) {
+  const s = String(text == null ? '' : text).replace(/\s+/g, '');
+  if (!s.startsWith(TRANSFER_PREFIX)) throw fail('this is not a transfer string');
+  const raw = Buffer.from(s.slice(TRANSFER_PREFIX.length), 'base64url');
+  if (raw.length < TRANSFER_HEAD + 12 + 16 + TRANSFER_SUM + 1) {
+    throw fail('this transfer string is incomplete: copy it again, all of it');
+  }
+  const body = raw.subarray(0, raw.length - TRANSFER_SUM);
+  if (!transferSum(body).equals(raw.subarray(raw.length - TRANSFER_SUM))) {
+    throw fail('this transfer string is incomplete: copy it again, all of it');
+  }
+  const logN = body[16];
+  if (logN > TRANSFER_LOG_N_MAX || logN < 10 || body[17] !== TRANSFER_R || body[18] !== TRANSFER_P) {
+    throw fail('this transfer string comes from a newer version of the extension');
+  }
+  return { head: body.subarray(0, TRANSFER_HEAD), logN,
+    iv: body.subarray(TRANSFER_HEAD, TRANSFER_HEAD + 12),
+    tag: body.subarray(TRANSFER_HEAD + 12, TRANSFER_HEAD + 28),
+    ct: body.subarray(TRANSFER_HEAD + 28) };
+}
+
+function transferCheck(text) {
+  transferParse(text);
+  return true;
+}
+
+// Anything that opens under the password is still only as trusted as whoever
+// wrote it, so each field goes back through what put() would accept.
+function transferCleanKeys(list) {
+  const keys = [];
+  const invalid = [];
+  const seen = new Set();
+  for (const k of Array.isArray(list) ? list : []) {
+    let name = null;
+    try { name = validateName(k && k.name); } catch (e) { /* counted below */ }
+    if (!name || seen.has(name) || typeof k.value !== 'string' || !k.value) {
+      invalid.push(String((k && k.name) || '?').slice(0, 64));
+      continue;
+    }
+    seen.add(name);
+    keys.push({
+      name, value: k.value, policy: k.policy === 'reveal' ? 'reveal' : 'exec-only',
+      expiresAt: Number(k.expiresAt) || null, maxUses: Number(k.maxUses) || null,
+      mcp: !!k.mcp, pub: !!k.pub, confirm: !!k.confirm,
+      mcpServers: (k.mcp && Array.isArray(k.mcpServers) && k.mcpServers.length)
+        ? k.mcpServers.map(String).slice(0, 32) : null,
+      note: k.note ? String(k.note).slice(0, NOTE_MAX) : null,
+      group: normalizeGroupName(k.group)
+    });
+  }
+  return { keys, invalid };
+}
+
+async function transferOpen(text, password) {
+  const t = transferParse(text);
+  const key = await transferKey(password, t.head.subarray(0, 16), t.logN);
+  const d = crypto.createDecipheriv('aes-256-gcm', key, t.iv);
+  d.setAAD(Buffer.concat([Buffer.from(TRANSFER_INFO, 'utf8'), t.head]));
+  d.setAuthTag(t.tag);
+  let packed;
+  try { packed = Buffer.concat([d.update(t.ct), d.final()]); }
+  catch (e) {
+    key.fill(0);
+    const wrong = fail('wrong password');
+    wrong.wrongPassword = true;
+    throw wrong;
+  }
+  key.fill(0);
+  let data;
+  try {
+    data = JSON.parse(zlib.inflateRawSync(packed, { maxOutputLength: TRANSFER_MAX_CLEAR }).toString('utf8'));
+  } catch (e) { throw fail('this transfer string holds no keys'); }
+  if (!data || !Array.isArray(data.keys)) throw fail('this transfer string holds no keys');
+  const clean = transferCleanKeys(data.keys);
+  return {
+    at: Number(data.at) || 0, keys: clean.keys, invalid: clean.invalid,
+    layout: Array.isArray(data.layout) ? data.layout : []
+  };
+}
+
+// Where each key would go, decided by fingerprint so that nothing already here
+// gets decrypted just to be compared. Names only: this goes on screen.
+function transferPreview(data) {
+  const v = loadRaw();
+  const now = Date.now();
+  const out = { at: data.at, fresh: [], same: [], conflicts: [], expired: [], invalid: data.invalid, mcp: 0 };
+  for (const k of data.keys) {
+    if (k.expiresAt && k.expiresAt <= now) { out.expired.push(k.name); continue; }
+    const here = findByName(v, k.name);
+    if (!here) { out.fresh.push(k.name); if (k.mcp) out.mcp++; continue; }
+    if (here.fingerprint === fingerprint(k.value)) out.same.push(k.name);
+    else out.conflicts.push(k.name);
+  }
+  return out;
+}
+
+// All at once and with a single save: stopping on the fifth key of seventy would
+// leave a half moved vault nobody could describe. A replaced key waits in the bin
+// rather than being overwritten, which is what makes the choice safe to offer.
+function transferApply(data, onConflict) {
+  const v = loadRaw();
+  const now = Date.now();
+  const items = readLayout().items;
+  const blank = !items.length;
+  const result = { added: 0, replaced: 0, kept: 0, same: 0, expired: 0 };
+  const binned = [];
+  const groupIds = new Map();
+  for (const i of items) if (i.type === 'group') groupIds.set(i.name.toLowerCase(), i.id);
+
+  const addGroup = (name, collapsed) => {
+    const n = normalizeGroupName(name);
+    if (!n || n.toLowerCase() === 'none') return null;
+    if (groupIds.has(n.toLowerCase())) return groupIds.get(n.toLowerCase());
+    const id = crypto.randomUUID();
+    items.push({ type: 'group', id, name: n, collapsed: !!collapsed });
+    groupIds.set(n.toLowerCase(), id);
+    return id;
+  };
+
+  // A machine with no layout takes the whole arrangement, empty groups and
+  // separators included. One that was already arranged only gains the groups its
+  // new keys need: dropping someone else's headings into a list that was sorted
+  // by hand is not what "import my keys" asked for.
+  if (blank) {
+    for (const i of data.layout) {
+      if (i && i.type === 'group') addGroup(i.name, i.collapsed);
+      else if (i && i.type === 'separator') {
+        items.push({ type: 'separator', id: crypto.randomUUID(), label: cleanLabel(i.label) });
+      }
+    }
+  }
+
+  for (const k of data.keys) {
+    if (k.expiresAt && k.expiresAt <= now) { result.expired++; continue; }
+    const here = findByName(v, k.name);
+    if (here) {
+      if (here.fingerprint === fingerprint(k.value)) { result.same++; continue; }
+      if (onConflict !== 'replace') { result.kept++; continue; }
+      binned.push(here);
+      delete v.secrets[here.id];
+      if (v.replace && v.replace[k.name]) delete v.replace[k.name];
+      dropMcpRequestsFor(v, [k.name]);
+    }
+    const groupId = (k.group && addGroup(k.group, false)) || (here && here.groupId) || null;
+    const entry = buildEntry(crypto.randomUUID(), k.name, k.value, {
+      policy: k.policy, expiresAt: k.expiresAt, maxUses: k.maxUses, mcp: k.mcp,
+      mcpServers: k.mcpServers, pub: k.pub, confirm: k.confirm, note: k.note, by: 'user'
+    }, groupId, groupId ? 'user' : null);
+    v.secrets[entry.id] = entry;
+    audit(v, here ? 'replace' : 'create', k.name, entry.kind, 'user');
+    if (entry.mcp) audit(v, 'mcp', k.name, entry.mcpServers ? entry.mcpServers.join(',') : 'allowed', 'user');
+    if (here) result.replaced++;
+    else result.added++;
+  }
+
+  if (!result.added && !result.replaced) return result;
+  // Bin first: a crash after this leaves one spare entry in the bin, the other
+  // way round it would leave a key that exists nowhere.
+  trashPutMany(binned);
+  if (items.length) writeLayout(items);
+  audit(v, 'transfer-in', null, String(result.added + result.replaced), 'user');
+  saveRaw(v, true);
+  return result;
 }
 
 // ----------------------------------------------------------- the commit guard
@@ -1428,8 +1737,21 @@ function put(name, value, opts) {
     groupId = String(o.groupId);
     groupBy = actorOf(o.groupBy !== undefined ? o.groupBy : o.by);
   }
+  const entry = buildEntry(existing ? existing.id : crypto.randomUUID(), n, value, o, groupId, groupBy);
+  v.secrets[entry.id] = entry;
+  audit(v, existing ? 'replace' : 'create', n, entry.kind, entry.createdBy);
+  // A key born with MCP access gets the same journal line as a later grant, so
+  // "who opened this key to MCP" has one answer whichever way it happened.
+  if (!existing && entry.mcp) {
+    audit(v, 'mcp', n, entry.mcpServers ? entry.mcpServers.join(',') : 'allowed', entry.createdBy);
+  }
+  saveRaw(v, true);
+  return { name: n, replaced: !!existing, fingerprint: entry.fingerprint, kind: entry.kind };
+}
+
+function buildEntry(id, n, value, o, groupId, groupBy) {
   const entry = {
-    id: existing ? existing.id : crypto.randomUUID(),
+    id,
     name: n,
     policy: o.policy === 'reveal' ? 'reveal' : 'exec-only',
     expiresAt: o.expiresAt || null,
@@ -1463,15 +1785,7 @@ function put(name, value, opts) {
   entry.fingerprint = fingerprint(value);
   entry.isFile = looksLikePrivateKey(value) || /^\{[\s\S]*"private_key"/.test(value);
   entry.ct = seal(entry, value);
-  v.secrets[entry.id] = entry;
-  audit(v, existing ? 'replace' : 'create', n, entry.kind, entry.createdBy);
-  // A key born with MCP access gets the same journal line as a later grant, so
-  // "who opened this key to MCP" has one answer whichever way it happened.
-  if (!existing && entry.mcp) {
-    audit(v, 'mcp', n, entry.mcpServers ? entry.mcpServers.join(',') : 'allowed', entry.createdBy);
-  }
-  saveRaw(v, true);
-  return { name: n, replaced: !!existing, fingerprint: entry.fingerprint, kind: entry.kind };
+  return entry;
 }
 
 // Replaces the VALUE and nothing else. put() rebuilds the whole entry from the
@@ -1664,6 +1978,7 @@ function revokeAll(confirm) {
   // worse: it holds the OLD key, so restoring from it after a revocation would
   // put back a key that no longer opens anything.
   try { fs.unlinkSync(RECOVERY_PATH); } catch (e) { /* none set up */ }
+  try { fs.unlinkSync(RECOVERY_LOG_PATH); } catch (e) { /* no history */ }
   try { fs.unlinkSync(TRASH_PATH); } catch (e) { /* nothing binned */ }
   // Pending MCP requests live inside the vault file just deleted; the layout
   // only names groups and stays, since it holds nothing sealed.
@@ -3572,8 +3887,20 @@ function issue(level, e) {
 // HKDF plutôt qu'un scrypt : une dérivation coûteuse ne sert qu'à compenser un
 // secret faible. Ici le secret est déjà uniforme sur 128 bits, il n'y a rien à
 // compenser — ralentir ne protégerait que contre une attaque déjà impossible.
+//
+// Une copie de la phrase reste dans recovery-log.bin, scellée sous la clé
+// maîtresse. La promesse précédente était « stockée nulle part », et elle se
+// payait cher : une phrase mal notée, ou un remplacement par erreur, laissait
+// quelqu'un sans filet au moment où il en avait besoin. Cette copie n'enlève
+// rien : elle ne s'ouvre qu'avec la clé maîtresse, et qui détient cette clé lit
+// déjà tout le coffre. Elle ne quitte pas la machine, le fichier d'export n'en
+// contient pas, et elle ne remplace pas le papier : si le magasin de l'OS est
+// perdu, elle est perdue avec lui.
 const RECOVERY_PATH = path.join(VAULT_DIR, 'recovery.bin');
 const RECOVERY_INFO = 'claude-vault-recovery-v1';
+const RECOVERY_LOG_PATH = path.join(VAULT_DIR, 'recovery-log.bin');
+const RECOVERY_LOG_INFO = 'claude-vault-recovery-log-v1';
+const RECOVERY_LOG_MAX = 5;
 const WORDS = require('./wordlist.js');
 const PHRASE_BYTES = 16;                    // 128 bits + 1 octet de contrôle = 17 mots
 
@@ -3622,11 +3949,13 @@ function recoveryStatus() {
   } catch (e) { return { enabled: false, at: null }; }
 }
 
-// Rend la phrase UNE SEULE FOIS. Elle n'est stockée nulle part : seule
-// l'enveloppe qu'elle ouvre l'est.
-function recoveryEnable() {
+function recoveryEnvelope() {
+  try { return JSON.parse(fs.readFileSync(RECOVERY_PATH, 'utf8')); }
+  catch (e) { return null; }
+}
+
+function writeEnvelope(entropy, id) {
   const key = masterKey();
-  const entropy = crypto.randomBytes(PHRASE_BYTES);
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(12);
   const rk = recoveryKey(entropy, salt);
@@ -3635,14 +3964,153 @@ function recoveryEnable() {
   const ct = Buffer.concat([c.update(key), c.final()]);
   rk.fill(0);
   writeAtomic(RECOVERY_PATH, JSON.stringify({
-    v: 1, at: Date.now(), salt: b64(salt), iv: b64(iv),
+    v: 1, id, at: Date.now(), salt: b64(salt), iv: b64(iv),
     tag: b64(c.getAuthTag()), ct: b64(ct)
   }));
-  return phraseEncode(entropy);
 }
 
+// Illisible (clé remplacée, fichier modifié) revient à vide : l'historique est
+// un filet, le coffre ne dépend jamais de lui.
+function recoveryLogRead() {
+  if (!fs.existsSync(RECOVERY_LOG_PATH)) return [];
+  try {
+    const f = JSON.parse(fs.readFileSync(RECOVERY_LOG_PATH, 'utf8'));
+    const k = derive(RECOVERY_LOG_INFO, Buffer.alloc(0), 32);
+    const d = crypto.createDecipheriv('aes-256-gcm', k, unb64(f.iv));
+    d.setAAD(Buffer.from(RECOVERY_LOG_INFO, 'utf8'));
+    d.setAuthTag(unb64(f.tag));
+    const clear = Buffer.concat([d.update(unb64(f.ct)), d.final()]);
+    k.fill(0);
+    const items = JSON.parse(clear.toString('utf8'));
+    return Array.isArray(items) ? items : [];
+  } catch (e) { return []; }
+}
+
+// Du plus ancien au plus récent : la fin de la liste est ce qui reste.
+function recoveryLogWrite(items) {
+  const kept = items.slice(-RECOVERY_LOG_MAX);
+  const iv = crypto.randomBytes(12);
+  const k = derive(RECOVERY_LOG_INFO, Buffer.alloc(0), 32);
+  const c = crypto.createCipheriv('aes-256-gcm', k, iv);
+  c.setAAD(Buffer.from(RECOVERY_LOG_INFO, 'utf8'));
+  const ct = Buffer.concat([c.update(Buffer.from(JSON.stringify(kept), 'utf8')), c.final()]);
+  k.fill(0);
+  writeAtomic(RECOVERY_LOG_PATH, JSON.stringify({
+    v: 1, iv: b64(iv), tag: b64(c.getAuthTag()), ct: b64(ct)
+  }));
+}
+
+// La phrase active passe dans le passé. Une phrase d'avant cet historique n'a
+// jamais été conservée : on garde sa date, c'est tout ce qui existe d'elle.
+function recoveryRetire(items, env, now) {
+  if (!env) return;
+  const it = items.find(i => i.id && i.id === env.id);
+  if (it) { it.replacedAt = now; return; }
+  items.push({ id: env.id || crypto.randomUUID(), createdAt: env.at || null, replacedAt: now, words: null });
+}
+
+function recoveryAudit(event, detail) {
+  try {
+    const v = loadRaw();
+    audit(v, event, null, detail || null, 'user');
+    saveRaw(v, false);
+  } catch (e) { /* un coffre illisible ne doit pas priver de la phrase qui le sauve */ }
+}
+
+// Sans l'ancienne phrase, volontairement : celui qui veut en changer est souvent
+// celui qui l'a perdue, et la clé maîtresse qui ouvre ce coffre suffit à sceller
+// la nouvelle. Le filet n'est donc pas une question posée avant, mais ce qu'on
+// peut défaire après : l'ancienne reste dans l'historique et se réactive.
+// L'ordre compte : copie scellée, puis enveloppe. Une coupure entre les deux
+// laisse l'ancienne phrase active et rien de perdu.
+function recoveryEnable() {
+  masterKey();
+  const entropy = crypto.randomBytes(PHRASE_BYTES);
+  const words = phraseEncode(entropy);
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const env = recoveryEnvelope();
+  const items = recoveryLogRead();
+  recoveryRetire(items, env, now);
+  items.push({ id, createdAt: now, replacedAt: null, words: words.join(' ') });
+  recoveryLogWrite(items);
+  writeEnvelope(entropy, id);
+  recoveryAudit(env ? 'recovery-replace' : 'recovery-create');
+  // Le fichier de sauvegarde porte l'enveloppe : sans cette ligne, il attendait la
+  // prochaine modification du coffre et ne s'ouvrait toujours qu'avec l'ancienne.
+  exportRefresh();
+  return words;
+}
+
+// Ce que le panneau peut dire sans afficher un seul mot. Le dernier mot n'est
+// qu'une somme de contrôle des seize autres : il permet de reconnaître sa feuille
+// de papier sans rien révéler de la phrase.
+function recoveryDetails() {
+  const env = recoveryEnvelope();
+  const items = recoveryLogRead();
+  const current = env ? items.find(i => i.id && i.id === env.id) : null;
+  const lastWord = i => (i && i.words ? i.words.split(' ').pop() : null);
+  const history = items.map(i => ({
+    id: i.id, createdAt: i.createdAt || null,
+    replacedAt: i === current ? null : (i.replacedAt || i.createdAt || null),
+    last: lastWord(i), canShow: !!i.words, current: i === current
+  })).reverse();
+  if (env && !current) {
+    history.unshift({ id: null, createdAt: env.at || null, replacedAt: null, last: null, canShow: false, current: true });
+  }
+  return {
+    enabled: !!env, at: env ? env.at || null : null, id: current ? current.id : null,
+    canShow: !!(current && current.words), last: lastWord(current), history
+  };
+}
+
+function recoveryShow(id) {
+  const it = recoveryLogRead().find(i => i.id && i.id === id);
+  if (!it || !it.words) throw fail('this phrase was not kept: it cannot be displayed');
+  recoveryAudit('recovery-show');
+  return it.words.split(' ');
+}
+
+// Rend son pouvoir à une phrase de l'historique : un remplacement par erreur se
+// défait, y compris s'il n'a pas été fait par la personne qui s'en aperçoit.
+function recoveryActivate(id) {
+  const items = recoveryLogRead();
+  const it = items.find(i => i.id && i.id === id);
+  if (!it || !it.words) throw fail('this phrase was not kept: it cannot be displayed');
+  const env = recoveryEnvelope();
+  if (env && env.id === id) return true;
+  recoveryRetire(items, env, Date.now());
+  it.replacedAt = null;
+  items.splice(items.indexOf(it), 1);
+  items.push(it);
+  recoveryLogWrite(items);
+  writeEnvelope(phraseDecode(it.words), it.id);
+  recoveryAudit('recovery-activate');
+  exportRefresh();
+  return true;
+}
+
+// Installe l'enveloppe qu'une phrase saisie vient d'ouvrir, et garde cette phrase.
+// C'est aussi le chemin par lequel une phrase d'avant l'historique y entre.
+function recoveryAdopt(entropy, env, reset) {
+  const id = env.id || crypto.randomUUID();
+  writeAtomic(RECOVERY_PATH, JSON.stringify(Object.assign({}, env, { id })));
+  const items = reset ? [] : recoveryLogRead();
+  const words = phraseEncode(entropy).join(' ');
+  const it = items.find(i => i.id === id);
+  if (it) it.words = words;
+  else items.push({ id, createdAt: env.at || Date.now(), replacedAt: null, words });
+  recoveryLogWrite(items);
+}
+
+// Tout part : l'enveloppe, les copies scellées, et l'enveloppe portée par le
+// fichier de sauvegarde, sinon « la phrase n'ouvre plus rien » resterait faux
+// jusqu'à la prochaine modification du coffre.
 function recoveryDisable() {
+  recoveryAudit('recovery-off');
   try { fs.unlinkSync(RECOVERY_PATH); } catch (e) { /* déjà absent */ }
+  try { fs.unlinkSync(RECOVERY_LOG_PATH); } catch (e) { /* jamais créé */ }
+  exportRefresh();
   return true;
 }
 
@@ -3670,6 +4138,7 @@ function recoveryRestore(phrase) {
   _master = key;
   _masterMode = null;
   storeKey(key, seq);
+  try { recoveryAdopt(entropy, r, false); } catch (e) { /* le coffre est rouvert, c'est l'essentiel */ }
   return { mode: _masterMode, secrets: listFast().length };
 }
 
@@ -3740,7 +4209,13 @@ setExportFields = locked(setExportFields);
 exportWrite = locked(exportWrite);
 exportRefresh = locked(exportRefresh);
 exportImport = locked(exportImport);
+transferSnapshot = locked(transferSnapshot);
+transferApply = locked(transferApply);
 recoveryRestore = locked(recoveryRestore);
+recoveryEnable = locked(recoveryEnable);
+recoveryDisable = locked(recoveryDisable);
+recoveryActivate = locked(recoveryActivate);
+recoveryShow = locked(recoveryShow);
 trashPutMany = locked(trashPutMany);
 purgeTrash = locked(purgeTrash);
 restoreTrashed = locked(restoreTrashed);
@@ -3773,8 +4248,10 @@ module.exports = {
   sweep, sweepTmp, suggest, isExpired, fingerprint, detectKind, kindSource,
   mintToken, redeemToken, materialize, redactor, healthCheck, lockDown,
   recoveryEnable, recoveryDisable, recoveryStatus, recoveryRestore,
+  recoveryDetails, recoveryShow, recoveryActivate,
   exportWrite, exportRefresh, exportStatus, exportForget, exportImport, exportInspect,
   exportEnsure,
+  transferPasswordIssue, transferCheck, transferBuild, transferOpen, transferPreview, transferApply,
   scanText,
   listTrash, restoreTrashed, emptyTrash, purgeTrash, TRASH_DAYS,
   // 1.2: groups and separators

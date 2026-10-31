@@ -14,6 +14,7 @@ node_modules/
 vault.json
 masterkey.bin
 recovery.bin
+recovery-log.bin
 trash.json
 policy.json
 pending-*.json

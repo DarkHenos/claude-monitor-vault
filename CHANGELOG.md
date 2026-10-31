@@ -6,6 +6,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from 1.0.0 onwards.
 
+## [1.3.0] - 2026-10-31
+
+### Added
+
+- **Transfer string.** Every key in one long line of text, names included,
+  encrypted with a password you choose (scrypt, AES-256-GCM). Paste it on another
+  machine, give the password, and the keys join the ones already there: unlike the
+  backup file, nothing is replaced and no master key travels. Keys and their own
+  settings travel; the policy, the log and the bin do not. You see what would
+  change before anything is written, and a replaced key waits in the bin.
+- **Phrase history.** A copy of the recovery phrase, sealed under the master key,
+  stays on the machine. The settings window shows when the phrase became active and
+  its last word, it can be displayed again, and a replaced phrase can be made active
+  again. Everything is recorded in the access log.
+
+### Changed
+
+- **The recovery phrase is no longer "stored nowhere".** Whoever holds the master
+  key can already read the whole vault, so the sealed copy gives nothing more to
+  anyone able to open it. It never leaves the machine and is not in the backup file.
+  Turning the phrase off erases it. Phrases created before this version were never
+  stored and stay that way until typed once in Recover with a phrase.
+- "Replace the phrase" is now **Generate a new phrase**. It still does not ask for
+  the current one, and now says exactly what it replaces and how to undo it.
+
+### Fixed
+
+- After a new phrase, or after turning it off, the backup file kept the previous
+  envelope until the next change to the vault. A new phrase written down at that
+  moment did not open the file. It is now rewritten at once, at startup if it was
+  left behind, and the settings window says so if it could not be.
+
 ## [1.2.0] - 2026-10-22
 
 Still in development. The IntelliJ support below is a **beta**.

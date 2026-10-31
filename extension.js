@@ -1503,7 +1503,7 @@ function panelStrings() {
     neverUsed: t('never used'),
     staleHint: t('Created {0} and unused since: consider rotating it.', '{0}'),
     recoTitle: t('Back up this vault'),
-    recoBody: t('A list of words, shown once, that reopens the vault if the master key is ever lost.'),
+    recoBody: t('A list of words that reopens the vault if the master key is ever lost.'),
     recoBtn: t('Create the backup key'),
     loading: t('loading…'),
     session5h: t('Session (5h)'),
