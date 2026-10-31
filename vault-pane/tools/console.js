@@ -54,4 +54,25 @@ function askHidden(question) {
   });
 }
 
-module.exports = { BRIDGE, isFrench, reopenInWindow, askLine, askHidden };
+// The system's own clipboard commands, since this window has no editor to ask.
+const CLIPBOARD = {
+  win32: { copy: [['clip']], paste: [['powershell', '-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw']] },
+  darwin: { copy: [['pbcopy']], paste: [['pbpaste']] },
+  linux: {
+    copy: [['wl-copy'], ['xclip', '-selection', 'clipboard']],
+    paste: [['wl-paste', '--no-newline'], ['xclip', '-selection', 'clipboard', '-o']],
+  },
+};
+
+function clipboardRun(verb, input) {
+  for (const [command, ...args] of (CLIPBOARD[process.platform] || {})[verb] || []) {
+    const ran = spawnSync(command, args, { input, encoding: 'utf8', windowsHide: true, timeout: 15000 });
+    if (ran.status === 0) return ran.stdout || '';
+  }
+  return null;
+}
+
+function copy(text) { return clipboardRun('copy', text) !== null; }
+function paste() { return clipboardRun('paste') || ''; }
+
+module.exports = { BRIDGE, isFrench, reopenInWindow, askLine, askHidden, copy, paste };

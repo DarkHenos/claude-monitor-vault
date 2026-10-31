@@ -1,7 +1,7 @@
 {
   "name": "vault-pane",
-  "version": "0.3.0",
-  "description": "The Claude Vault beside the chat, with or without VS Code: key names, groups and MCP access, new keys, and the Claude quotas.",
+  "version": "0.4.0",
+  "description": "The Claude Vault beside the chat, with or without VS Code: key names, groups and MCP access, new keys, the transfer string and the recovery phrase, and the Claude quotas.",
   "author": { "name": "DarkHenos" },
   "license": "MIT",
   "types": "./types/index.d.ts"

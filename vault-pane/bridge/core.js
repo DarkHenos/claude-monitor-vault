@@ -956,6 +956,22 @@ function transferPasswordIssue(password) {
   return null;
 }
 
+// For whoever would rather not invent one. Twenty characters from an alphabet with
+// no look-alikes, about 99 bits: this password has to survive offline guessing, and
+// still be readable aloud or retyped from another screen.
+const TRANSFER_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+function transferPasswordGenerate() {
+  for (;;) {
+    let p = '';
+    for (let i = 0; i < 20; i++) {
+      if (i && i % 5 === 0) p += '-';
+      p += TRANSFER_ALPHABET[crypto.randomInt(TRANSFER_ALPHABET.length)];
+    }
+    if (!transferPasswordIssue(p)) return p;
+  }
+}
+
 // Asynchronous on purpose: half a second of scrypt must not freeze the editor.
 // NFKC, because the same accented password can reach two machines encoded two ways.
 function transferKey(password, salt, logN) {
@@ -4251,7 +4267,7 @@ module.exports = {
   recoveryDetails, recoveryShow, recoveryActivate,
   exportWrite, exportRefresh, exportStatus, exportForget, exportImport, exportInspect,
   exportEnsure,
-  transferPasswordIssue, transferCheck, transferBuild, transferOpen, transferPreview, transferApply,
+  transferPasswordIssue, transferPasswordGenerate, transferCheck, transferBuild, transferOpen, transferPreview, transferApply,
   scanText,
   listTrash, restoreTrashed, emptyTrash, purgeTrash, TRASH_DAYS,
   // 1.2: groups and separators

@@ -6,6 +6,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from 1.0.0 onwards.
 
+## [1.3.1] - 2026-10-31
+
+### Changed
+
+- **The transfer string now happens in a modal of the settings window.** Creating:
+  a password and its confirmation, or both fields empty for a strong generated one,
+  then the string and that password, each with its own copy button. Importing: paste
+  the string, give the password, read what would change, confirm. Refusals and
+  errors show in the modal. The palette commands open the same modal.
+
+### Fixed
+
+- A click on Create a transfer string could seem to do nothing: it relied on native
+  dialogs, and a failure there was reported nowhere.
+
+### Added
+
+- **The same in JetBrains IDEs and in Claude Desktop.** The JetBrains plugin runs
+  these features from the same code. `vault-pane` 0.4.0, the pane of Claude Desktop
+  and the Claude Code terminal, adds Create a transfer string, Import a string, Show
+  the phrase and Phrase history. Like its other decisions they open in a console
+  window, where the password and the words stay.
+
 ## [1.3.0] - 2026-10-31
 
 ### Added

@@ -307,10 +307,11 @@ can be from then on, or generate a new one.
 
 To move your keys without moving a file, **Create a transfer string** turns every
 key into one long line of text, names included, encrypted with a password you
-choose (scrypt, then AES-256-GCM; at least 12 characters). Nothing can be read
-from it without the password, not even how many keys it holds. On the other
-machine, copy the string and run **Import a transfer string**: it is picked up
-from the clipboard, and you see what would change before anything is written.
+choose (scrypt, then AES-256-GCM; at least 12 characters), or one generated for
+you if you leave both fields empty. Nothing can be read from it without the
+password, not even how many keys it holds. On the other machine, **Import a transfer
+string** in the settings window takes the string, picked up from the clipboard when
+it is there, and the password. You see what would change before anything is written.
 
 | | Transfer string | Backup file |
 |---|---|---|

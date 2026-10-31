@@ -34,9 +34,14 @@ function window(vault, answers) {
   return {
     vault, T,
     wrap: () => { wrapped++; },
-    ui: { say: l => spoken.push(l), ask: next, askHidden: next, clear: () => { spoken = []; } },
+    ui: {
+      say: l => spoken.push(l), ask: next, askHidden: next, clear: () => { spoken = []; },
+      copy: text => { clipboard = text; return Promise.resolve(true); },
+      paste: () => Promise.resolve(clipboard),
+    },
   };
 }
+let clipboard = '';
 
 async function main() {
   fs.mkdirSync(config, { recursive: true });
@@ -70,7 +75,7 @@ async function main() {
   vault.emptyTrash();
 
   // A decision needs a person: no console, no decision.
-  for (const args of [['replace', 'DEMO_KEY'], ['delete', 'DEMO_KEY'], ['mcp', 'DEMO_KEY'], ['phrase'], ['restore'], ['bin']]) {
+  for (const args of [['replace', 'DEMO_KEY'], ['delete', 'DEMO_KEY'], ['mcp', 'DEMO_KEY'], ['phrase'], ['phrase-show'], ['phrase-history'], ['restore'], ['transfer-out'], ['transfer-in'], ['bin']]) {
     const ran = owner(...args);
     check('sans console, refuse : ' + args[0], ran.status === 4, ran.stderr);
   }
@@ -135,6 +140,88 @@ async function main() {
   check('une mauvaise phrase est refusee', wrong);
   check('la bonne phrase rouvre le coffre', await actions.restore(window(vault, [words])));
   check('les cles sont la apres restauration', vault.reveal('DEMO_KEY').value === SECRET + '-new');
+
+  // A new phrase asks for no old one, says what it replaces, and can be undone.
+  const wordsIn = () => { const l = spoken.find(x => x.startsWith('  ')); return l ? l.trim() : ''; };
+  const scripted = (answers, watch) => {
+    const c = window(vault, answers);
+    c.ui.clear = () => { if (watch) watch(wordsIn(), spoken.join('\n')); spoken = []; };
+    return c;
+  };
+  const first = words;
+  let warned = '';
+  let second = '';
+  const asked = scripted([T.yes, ''], w => { second = w; });
+  const askAll = asked.ui.ask;
+  asked.ui.ask = q => { if (q === T.phraseConfirm) warned = spoken.join('\n'); return askAll(q); };
+  asked.ui.askHidden = () => { throw new Error('a hidden question was asked'); };
+  check('une nouvelle phrase se cree sans l\'ancienne', await actions.phrase(asked));
+  check('elle est differente', second && second !== first);
+  check('la fenetre dit ce qui est remplace', warned.includes(first.split(' ').pop()) && warned.includes(T.phraseOverwrite));
+  check('la fenetre previent pour une fuite', warned.includes(T.phraseLeak));
+  check('l\'ancienne phrase n\'ouvre plus', await actions.restore(window(vault, [first])).then(() => false, () => true));
+
+  let shownAgain = '';
+  check('afficher sans oui ne montre rien', !(await actions.phraseDisplay(scripted([T.no], w => { shownAgain = w; }))));
+  check('rien n\'a ete montre', !shownAgain && !spoken.join('\n').includes(second));
+  check('afficher avec oui montre la phrase', await actions.phraseDisplay(scripted([T.yes, ''], w => { if (w) shownAgain = w; })));
+  check('c\'est la phrase active', shownAgain === second);
+  check('l\'affichage est au journal', vault.auditLog(50).some(e => e.event === 'recovery-show'));
+  check('status ne montre toujours aucun mot', !owner('status').stdout.includes(second));
+
+  const listing = window(vault, ['']);
+  check('l\'historique : Entree laisse', !(await actions.phraseHistory(listing)));
+  const lines = spoken.filter(l => /^\d+\. /.test(l));
+  check('l\'historique liste les deux phrases', lines.length === 2);
+  check('l\'historique ne montre que le dernier mot', !lines.join('\n').includes(second.split(' ').slice(0, 3).join(' ')));
+
+  let oldWords = '';
+  check('une phrase remplacee s\'affiche, non refuse', await actions.phraseHistory(scripted(['2', T.no], w => { if (w) oldWords = w; })));
+  check('c\'est bien l\'ancienne', oldWords === first);
+  check('non ne reactive pas', await actions.restore(window(vault, [second])));
+  check('oui la reactive', await actions.phraseHistory(scripted(['2', T.yes, ''])));
+  check('l\'ancienne rouvre le coffre', await actions.restore(window(vault, [first])));
+  check('la remplacante n\'ouvre plus', await actions.restore(window(vault, [second])).then(() => false, () => true));
+
+  // Every key in one line, the password never leaving the window's hidden prompts.
+  const PASS = 'violet tractor maple seven';
+  clipboard = '';
+  check('transfert : non annule', !(await actions.transferOut(window(vault, [T.no]))));
+  check('transfert : rien au journal', !vault.auditLog(200).some(e => e.event === 'transfer-out'));
+  check('transfert : un mot de passe faible est redemande', await actions.transferOut(window(vault, [T.yes, 'court', PASS, PASS, '1', ''])));
+  check('transfert : le faible a ete explique', spoken.some(l => l.includes('12')));
+  const string = clipboard;
+  check('transfert : la chaine est au presse-papiers', string.startsWith('cvault1.'));
+  check('transfert : opaque', !string.includes('DEMO_KEY') && !string.includes(SECRET));
+  check('transfert : aucun mot de passe a l\'ecran', !spoken.join('\n').includes(PASS));
+  check('transfert : au journal', vault.auditLog(200).some(e => e.event === 'transfer-out'));
+  clipboard = '';
+  check('transfert : deux mots de passe differents n\'aboutissent pas', !(await actions.transferOut(window(vault, [T.yes, PASS, PASS + 'x']))));
+  check('transfert : rien au presse-papiers', clipboard === '');
+  const file = path.join(home, 'string.txt');
+  check('transfert : vers un fichier', await actions.transferOut(window(vault, [T.yes, PASS, PASS, '2', file, ''])));
+  check('transfert : le fichier ne contient que la chaine', vault.transferCheck(fs.readFileSync(file, 'utf8')));
+
+  clipboard = string;
+  check('import : rien a faire si tout est la', !(await actions.transferIn(window(vault, [PASS]))));
+  check('import : il le dit', spoken.some(l => l === T.previewNothing(1)));
+  vault.put('DEMO_KEY', 'another-value-for-the-clash', { by: 'user' });
+  vault.put('DEMO_OTHER', 'stays-where-it-is-0123456', { by: 'user' });
+  check('import : un mauvais mot de passe redemande, Entree quitte', !(await actions.transferIn(window(vault, ['pas le bon mot de passe', '']))));
+  check('import : il le dit aussi', spoken.includes(T.wrongPassword));
+  check('import : Entree au conflit annule', !(await actions.transferIn(window(vault, [PASS, '']))));
+  check('import : le conflit est nomme', spoken.includes(T.previewConflict('DEMO_KEY')));
+  check('import : rien n\'a bouge', vault.reveal('DEMO_KEY').value === 'another-value-for-the-clash');
+  check('import : garder ne remplace pas', !(await actions.transferIn(window(vault, [PASS, '1']))));
+  check('import : prendre celle de la chaine', await actions.transferIn(window(vault, [PASS, '2'])));
+  check('import : la valeur arrive', vault.reveal('DEMO_KEY').value === SECRET + '-new');
+  check('import : l\'ancienne est a la corbeille', vault.listTrash().some(i => i.name === 'DEMO_KEY'));
+  check('import : les autres cles restent', vault.reveal('DEMO_OTHER').value === 'stays-where-it-is-0123456');
+  clipboard = '';
+  check('import : depuis un chemin de fichier', !(await actions.transferIn(window(vault, ['"' + file + '"', PASS]))));
+  check('import : le fichier a ete lu', spoken.some(l => l === T.previewNothing(1)));
+  check('import : une chaine coupee est refusee', !(await actions.transferIn(window(vault, [string.slice(0, -30)]))));
+  check('import : il dit qu\'elle est coupee', spoken.some(l => l.includes('incomplete')));
 }
 
 main()

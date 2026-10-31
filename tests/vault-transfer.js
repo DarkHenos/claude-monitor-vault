@@ -79,6 +79,20 @@ const exportOf = v => JSON.parse(fs.readFileSync(v.exportStatus().path, 'utf8'))
     assert.equal(a.transferPasswordIssue(PASSWORD), null);
   });
 
+  await test('a generated password is strong, readable, and opens its string', async () => {
+    const seen = new Set();
+    for (let i = 0; i < 200; i++) {
+      const p = a.transferPasswordGenerate();
+      assert.match(p, /^[A-HJKMNP-Z2-9]{5}(-[A-HJKMNP-Z2-9]{5}){3}$/);
+      assert.equal(a.transferPasswordIssue(p), null);
+      seen.add(p);
+    }
+    assert.equal(seen.size, 200);
+    const p = a.transferPasswordGenerate();
+    const made = await a.transferBuild(p);
+    assert.equal((await a.transferOpen(made.text, p)).keys.length, 5);
+  });
+
   const b = machine();
   b.createGroup('Mine');
   b.put('LOCAL_ONLY', 'value-only-on-b-0123456789', { by: 'user', groupId: b.findGroup('Mine').id });

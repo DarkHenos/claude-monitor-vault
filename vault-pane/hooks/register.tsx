@@ -128,6 +128,10 @@ const TEXTS = {
     noRecovery: 'No recovery phrase: if this computer\'s key is lost, your keys are lost with it.',
     makePhrase: 'Create the recovery phrase',
     newPhrase: 'New phrase',
+    showPhrase: 'Show the phrase',
+    phraseHistory: 'Phrase history',
+    transferOut: 'Create a transfer string',
+    transferIn: 'Import a string',
     restore: 'Restore',
     bin: (n: number) => `Bin (${n})`,
     ownerFailed: 'That did not work: try again from the pane.',
@@ -215,6 +219,10 @@ const TEXTS = {
     noRecovery: 'Aucune phrase de récupération : si la clé de cet ordinateur est perdue, vos clés le sont aussi.',
     makePhrase: 'Créer la phrase de récupération',
     newPhrase: 'Nouvelle phrase',
+    showPhrase: 'Afficher la phrase',
+    phraseHistory: 'Historique des phrases',
+    transferOut: 'Créer une chaîne de transfert',
+    transferIn: 'Importer une chaîne',
     restore: 'Restaurer',
     bin: (n: number) => `Corbeille (${n})`,
     ownerFailed: "Ça n'a pas marché : réessayez depuis le panneau.",
@@ -1006,7 +1014,11 @@ export const register: Register = on => {
                     <Button key="phrase" variant={waiting.hasRecovery ? 'secondary' : 'primary'} onPress={() => decide($, 'phrase')}>
                       {waiting.hasRecovery ? T.newPhrase : T.makePhrase}
                     </Button>
+                    {waiting.hasRecovery && <Button key="phrase-show" onPress={() => decide($, 'phrase-show')}>{T.showPhrase}</Button>}
+                    {waiting.hasRecovery && <Button key="phrase-history" onPress={() => decide($, 'phrase-history')}>{T.phraseHistory}</Button>}
                     <Button key="restore" onPress={() => decide($, 'restore')}>{T.restore}</Button>
+                    {keys.length > 0 && <Button key="transfer-out" onPress={() => decide($, 'transfer-out')}>{T.transferOut}</Button>}
+                    <Button key="transfer-in" onPress={() => decide($, 'transfer-in')}>{T.transferIn}</Button>
                     {waiting.binned > 0 && <Button key="bin" onPress={() => decide($, 'bin')}>{T.bin(waiting.binned)}</Button>}
                   </Box>
                 </Box>

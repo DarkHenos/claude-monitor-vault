@@ -41,7 +41,7 @@ shared with VS Code.
 Windows, with a JetBrains IDE installed (its bundled JDK is used):
 
 ```powershell
-.\build.ps1            # build\distributions\claude-monitor-vault-1.2.0.zip
+.\build.ps1            # build\distributions\claude-monitor-vault-<version>.zip
 .\build.ps1 -Test      # plus the headless integration test
 .\build.ps1 -Verify    # plus JetBrains' Plugin Verifier
 ```

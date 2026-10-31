@@ -333,7 +333,7 @@ test('where no form module can run, a new key hands a name to the window, never 
 })
 
 // A vault with something waiting, as tools/owner.js status prints it.
-function ownerWorld(on: any, runs: string[][], isPlaced = () => true) {
+function ownerWorld(on: any, runs: string[][], isPlaced = () => true, hasRecovery = false) {
   const clock = world(on)
   on('command.register', () => ({ value: { command: 'vault' } }))
   on('ui.open', () => ({ value: isPlaced() ? { isPlaced: true } : { isPlaced: false, reason: 'narrow' } }))
@@ -349,7 +349,7 @@ function ownerWorld(on: any, runs: string[][], isPlaced = () => true) {
             replaces: [{ name: 'DEMO_LOOSE', kind: 'secret', length: 12, note: 'rotation' }],
             mcp: [{ rid: 'req1', names: ['DEMO_LOOSE'], servers: ['github'], by: 'claude', reason: null }],
             uses: [{ id: 'use1', name: 'DEMO_LOOSE', who: null }],
-            hasRecovery: false,
+            hasRecovery,
             binned: 2,
           })
           : LISTING,
@@ -400,18 +400,43 @@ test('each key can be deleted or opened to MCP, and the recovery phrase is offer
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /recovery phrase|phrase de récupération/ })).toBeDefined()
-  for (const [key, action] of [['del:DEMO_LOOSE', 'delete'], ['mcp:DEMO_LOOSE', 'mcp'], ['phrase', 'phrase'], ['restore', 'restore'], ['bin', 'bin']] as const) {
+  for (const [key, action] of [['del:DEMO_LOOSE', 'delete'], ['mcp:DEMO_LOOSE', 'mcp'], ['phrase', 'phrase'], ['restore', 'restore'], ['transfer-out', 'transfer-out'], ['transfer-in', 'transfer-in'], ['bin', 'bin']] as const) {
     await ui.press({ key })
     await clock.settle()
     expect(runs.some(a => a.includes('--window') && a.includes(action))).toBe(true)
   }
+  // There is no phrase yet in this world, so nothing to show or go back to.
+  expect(await ui.find({ key: 'phrase-show' })).toBeUndefined()
+  expect(await ui.find({ key: 'phrase-history' })).toBeUndefined()
   await ui.unmount()
 
   // No decision can be raised from a phone: its window would open out of sight.
   const phone = await $.ui.mount({ ...PANE, surface: 'mobile' })
   expect(await phone.find({ key: 'del:DEMO_LOOSE' })).toBeUndefined()
   expect(await phone.find({ key: 'phrase' })).toBeUndefined()
+  expect(await phone.find({ key: 'transfer-out' })).toBeUndefined()
+  expect(await phone.find({ key: 'transfer-in' })).toBeUndefined()
   expect(await phone.find({ key: 'review:replace:DEMO_LOOSE' })).toBeUndefined()
+  await phone.unmount()
+})
+
+test('with a phrase, it can be shown and its history opened, each in a window', async ($, on) => {
+  const runs: string[][] = []
+  const clock = ownerWorld(on, runs, () => true, true)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  for (const action of ['phrase-show', 'phrase-history']) {
+    await ui.press({ key: action })
+    await clock.settle()
+    expect(runs.some(a => a.includes('--window') && a.includes(action))).toBe(true)
+  }
+  await ui.unmount()
+
+  const phone = await $.ui.mount({ ...PANE, surface: 'mobile' })
+  expect(await phone.find({ key: 'phrase-show' })).toBeUndefined()
+  expect(await phone.find({ key: 'phrase-history' })).toBeUndefined()
   await phone.unmount()
 })
 

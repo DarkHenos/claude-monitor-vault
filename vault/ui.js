@@ -1555,10 +1555,12 @@ function activateVault(context, version, onChange) {
     }
     settingsPanel = vscode.window.createWebviewPanel(
       'claudeVault.settings', t('Claude Vault: settings'),
-      vscode.ViewColumn.Active, { enableScripts: true });
+      // Retained: leaving the tab must not lose a string nobody has copied yet.
+      vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
     settingsPanel.webview.html = settingsHtml();
     settingsPanel.webview.onDidReceiveMessage(m => {
       if (!m) return;
+      if (Object.prototype.hasOwnProperty.call(TRANSFER_ACTIONS, m.type)) { transferMessage(m); return; }
       if (m.type === 'codexConnect' || m.type === 'codexDisconnect') {
         vscode.commands.executeCommand(m.type === 'codexConnect' ? 'agentBridge.connectVault' : 'agentBridge.disconnectVault')
           .then(()=>showSettings()).catch(e=>vscode.window.showErrorMessage(e.message));
@@ -1641,8 +1643,6 @@ function activateVault(context, version, onChange) {
       if (m.type === 'recOff') recoveryOff().then(redraw);
       if (m.type === 'recShow') recoveryShowFlow().then(redraw);
       if (m.type === 'recHist') recoveryHistoryFlow().then(redraw);
-      if (m.type === 'trfOut') transferOut().then(redraw);
-      if (m.type === 'trfIn') transferIn().then(redraw);
     });
     settingsPanel.onDidDispose(() => { settingsPanel = null; });
     context.subscriptions.push(settingsPanel);
@@ -1803,6 +1803,9 @@ ${p.tampered ? '<div class="etat">' + esc(t('The settings file was changed outsi
     // The log rather than a field of its own: it already prunes itself, and it
     // is the place someone looks when they did not expect the answer.
     const lastTransfer = vault.auditLog(500).find(e => e.event === 'transfer-out');
+    const transferCount = vault.listFast().filter(k => !k.expired).length;
+    const modalOnLoad = transferOnLoad;
+    transferOnLoad = null;
     let exp = { path: null, at: null, present: false, at_file: null };
     try { exp = vault.exportStatus(); } catch (e) { /* no policy file yet */ }
     let binned = [];
@@ -1986,6 +1989,31 @@ ${p.tampered ? '<div class="etat">' + esc(t('The settings file was changed outsi
     .rail a { font-size: 12px; padding: 4px 9px;
               border: 1px solid color-mix(in srgb, var(--vscode-foreground) 14%, transparent); }
   }
+  /* The transfer modal. No color-mix here: the browser of JetBrains 2023.1 has none. */
+  .voile { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+           padding: 20px; background: rgba(0, 0, 0, .5); }
+  .voile[hidden], .voile section[hidden], .voile [hidden] { display: none; }
+  .boite { width: 100%; max-width: 540px; max-height: calc(100vh - 40px); overflow: auto; padding: 20px 22px;
+           border-radius: 8px; box-shadow: 0 8px 28px rgba(0, 0, 0, .35);
+           color: var(--vscode-foreground);
+           background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+           border: 1px solid var(--vscode-widget-border, var(--vscode-focusBorder)); }
+  .boite h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+  .boite p { margin: 8px 0 0; font-size: 12.5px; }
+  .boite .discret { opacity: .75; }
+  .champ { display: block; margin-top: 12px; font-size: 12.5px; }
+  .champ input, .champ textarea { display: block; width: 100%; margin-top: 4px; padding: 5px 8px; border-radius: 4px;
+           font-size: 12.5px; color: var(--vscode-input-foreground); background: var(--vscode-input-background);
+           border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, transparent)); }
+  .champ textarea { height: 110px; resize: vertical; word-break: break-all;
+           font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; }
+  .champ input:focus, .champ textarea:focus { outline: none; border-color: var(--vscode-focusBorder); }
+  .boite .toggle { margin-top: 8px; }
+  .genere { display: block; margin-top: 4px; padding: 6px 8px; border-radius: 4px; user-select: all;
+           font-family: var(--vscode-editor-font-family, monospace); font-size: 13px;
+           background: var(--vscode-input-background); }
+  .boite ul { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; }
+  .boite li { margin-top: 4px; overflow-wrap: anywhere; }
 </style></head><body>
 <div class="page">
 
@@ -2090,7 +2118,7 @@ ${exp.path ? '<div class="chemin">' + esc(exp.path) + '</div>' : ''}
 <div class="pourquoi">${esc(t('Only the keys and their own settings travel. For a full restore, with the access log, the bin and your settings, use the backup file.'))}</div>
 ${lastTransfer ? '<div class="pourquoi">' + esc(t('Last string created {0}.', whenText(lastTransfer.at))) + '</div>' : ''}
 <div class="actions">
-  <button class="doux" id="trfout">${esc(t('Create a transfer string'))}</button>
+  <button class="doux" id="trfout"${transferCount ? '' : ' disabled'}>${esc(t('Create a transfer string'))}</button>
   <button class="doux" id="trfin">${esc(t('Import a transfer string'))}</button>
 </div>
 </div>
@@ -2219,6 +2247,62 @@ ${lastTransfer ? '<div class="pourquoi">' + esc(t('Last string created {0}.', wh
 </div>
 </div>
 
+</div>
+</div>
+
+<div class="voile" id="trfVoile" role="dialog" aria-modal="true" aria-labelledby="trfTitre" hidden>
+<div class="boite">
+  <h3 id="trfTitre"></h3>
+  <div class="etat" id="trfErreur" role="alert" hidden></div>
+
+  <section id="trfEtapeOut" hidden>
+    <p>${esc(t('Every key leaves this vault in one line of text, protected only by the password you choose next. Anyone holding both can read them all. This will be recorded in the log.'))}</p>
+    <label class="champ">${esc(t('Password'))}<input type="password" id="trfMdp" autocomplete="off"></label>
+    <label class="champ">${esc(t('Confirm the password'))}<input type="password" id="trfMdp2" autocomplete="off"></label>
+    <label class="toggle"><input type="checkbox" id="trfVoir"><span>${esc(t('Show the password'))}</span></label>
+    <p class="discret">${esc(t('The password is stored nowhere and nothing can recover it. Leave both fields empty and a strong one is generated for you.'))}</p>
+    <div class="actions"><button id="trfCreer">${esc(t('Create the string'))}</button><button class="doux" data-trf-ferme>${esc(t('Cancel'))}</button></div>
+  </section>
+
+  <section id="trfEtapeChaine" hidden>
+    <p id="trfTaille"></p>
+    <div class="etat" id="trfRates" hidden></div>
+    <label class="champ">${esc(t('The string'))}<textarea id="trfChaine" readonly></textarea></label>
+    <div id="trfGenere" hidden>
+      <p>${esc(t('Generated password: copy it now, it is shown only here and stored nowhere.'))}</p>
+      <code class="genere" id="trfGenereMdp"></code>
+    </div>
+    <p class="discret">${esc(t('Send the password another way than the string, and paste neither into an assistant chat. The string shows the keys as they are now: it does not follow later changes.'))}</p>
+    <div class="actions">
+      <button id="trfCopier">${esc(t('Copy the string'))}</button>
+      <button class="doux" id="trfCopierMdp" hidden>${esc(t('Copy the password'))}</button>
+      <button class="doux" id="trfEnregistrer">${esc(t('Save as .txt'))}</button>
+      <button class="doux pousse" data-trf-ferme>${esc(t('Done'))}</button>
+    </div>
+  </section>
+
+  <section id="trfEtapeIn" hidden>
+    <label class="champ">${esc(t('The string'))}<textarea id="trfColle" spellcheck="false"></textarea></label>
+    <p class="discret">${esc(t('Paste the string, all of it. A .txt file saved earlier holds it too.'))}</p>
+    <label class="champ">${esc(t('Password'))}<input type="password" id="trfMdpIn" autocomplete="off"></label>
+    <p class="discret">${esc(t('The password chosen when this string was created.'))}</p>
+    <div class="actions"><button id="trfOuvrir">${esc(t('Open the string'))}</button><button class="doux" data-trf-ferme>${esc(t('Cancel'))}</button></div>
+  </section>
+
+  <section id="trfEtapeApercu" hidden>
+    <ul id="trfLignes"></ul>
+    <div class="actions">
+      <button id="trfImporter" hidden>${esc(t('Import'))}</button>
+      <button id="trfRemplacer" hidden>${esc(t('Use the ones from the string'))}</button>
+      <button class="doux" id="trfGarder" hidden>${esc(t('Keep the ones here'))}</button>
+      <button class="doux" data-trf-ferme>${esc(t('Cancel'))}</button>
+    </div>
+  </section>
+
+  <section id="trfEtapeFin" hidden>
+    <p id="trfMessage"></p>
+    <div class="actions"><button data-trf-ferme>${esc(t('Done'))}</button></div>
+  </section>
 </div>
 </div>
 
@@ -2522,8 +2606,159 @@ ${lastTransfer ? '<div class="pourquoi">' + esc(t('Last string created {0}.', wh
   if ($('recoff')) $('recoff').addEventListener('click', function () { api.postMessage({ type: 'recOff' }); });
   if ($('recshow')) $('recshow').addEventListener('click', function () { api.postMessage({ type: 'recShow' }); });
   if ($('rechist')) $('rechist').addEventListener('click', function () { api.postMessage({ type: 'recHist' }); });
-  $('trfout').addEventListener('click', function () { api.postMessage({ type: 'trfOut' }); });
-  $('trfin').addEventListener('click', function () { api.postMessage({ type: 'trfIn' }); });
+
+  // The transfer modal. Opening it asks nothing of the host: it is there at the click.
+  var TRF = ${JSON.stringify({
+    titleOut: t('Create a transfer string with {0} key(s)?', String(transferCount)),
+    titleIn: t('Import a transfer string'),
+    differ: t('The two passwords differ.'),
+    needString: t('Paste the string, all of it. A .txt file saved earlier holds it too.'),
+    needPassword: t('Enter the password.'),
+    working: t('Working...'),
+    onLoad: modalOnLoad
+  }).replace(/</g, '\\u003c')};
+  var TRF_ETAPES = ['trfEtapeOut', 'trfEtapeChaine', 'trfEtapeIn', 'trfEtapeApercu', 'trfEtapeFin'];
+  var trfOuvert = false, trfEnCours = null, trfOrigine = null;
+
+  function trfEtape(id, titre) {
+    TRF_ETAPES.forEach(function (e) { $(e).hidden = e !== id; });
+    if (titre !== undefined) $('trfTitre').textContent = titre;
+    trfErreur('');
+  }
+  function trfErreur(texte) {
+    $('trfErreur').textContent = texte;
+    $('trfErreur').hidden = !texte;
+  }
+  // scrypt takes a moment: the button says so, and cannot be pressed twice.
+  function trfAttend(bouton) {
+    trfEnCours = { bouton: bouton, texte: bouton.textContent };
+    bouton.disabled = true;
+    bouton.textContent = TRF.working;
+  }
+  function trfRepris() {
+    if (!trfEnCours) return;
+    trfEnCours.bouton.disabled = false;
+    trfEnCours.bouton.textContent = trfEnCours.texte;
+    trfEnCours = null;
+  }
+  function trfVide() {
+    ['trfMdp', 'trfMdp2', 'trfMdpIn', 'trfChaine', 'trfColle'].forEach(function (id) { $(id).value = ''; });
+    $('trfGenereMdp').textContent = '';
+    $('trfVoir').checked = false;
+    $('trfMdp').type = 'password';
+    $('trfMdp2').type = 'password';
+  }
+  function trfOuvre(mode, origine) {
+    trfVide();
+    trfRepris();
+    trfOrigine = origine || null;
+    trfOuvert = true;
+    $('trfVoile').hidden = false;
+    if (mode === 'in') {
+      trfEtape('trfEtapeIn', TRF.titleIn);
+      api.postMessage({ type: 'trfClip' });
+      $('trfColle').focus();
+    } else {
+      trfEtape('trfEtapeOut', TRF.titleOut);
+      $('trfMdp').focus();
+    }
+  }
+  function trfFerme() {
+    trfVide();
+    trfRepris();
+    trfOuvert = false;
+    $('trfVoile').hidden = true;
+    if (trfOrigine) trfOrigine.focus();
+    api.postMessage({ type: 'trfClose' });
+  }
+  $('trfout').addEventListener('click', function (e) { trfOuvre('out', e.currentTarget); });
+  $('trfin').addEventListener('click', function (e) { trfOuvre('in', e.currentTarget); });
+  [].forEach.call(document.querySelectorAll('[data-trf-ferme]'), function (b) {
+    b.addEventListener('click', trfFerme);
+  });
+  // Escape closes, except over a string that has just been made: that one is lost
+  // for good, and with it a generated password shown nowhere else.
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && trfOuvert && $('trfEtapeChaine').hidden) trfFerme();
+  });
+  $('trfVoir').addEventListener('change', function (e) {
+    var type = e.currentTarget.checked ? 'text' : 'password';
+    $('trfMdp').type = type;
+    $('trfMdp2').type = type;
+  });
+  function trfCreer() {
+    if ($('trfMdp').value !== $('trfMdp2').value) { trfErreur(TRF.differ); return; }
+    trfErreur('');
+    trfAttend($('trfCreer'));
+    api.postMessage({ type: 'trfBuild', password: $('trfMdp').value });
+  }
+  function trfOuvrir() {
+    if (!$('trfColle').value.trim()) { trfErreur(TRF.needString); $('trfColle').focus(); return; }
+    if (!$('trfMdpIn').value) { trfErreur(TRF.needPassword); $('trfMdpIn').focus(); return; }
+    trfErreur('');
+    trfAttend($('trfOuvrir'));
+    api.postMessage({ type: 'trfOpen', text: $('trfColle').value, password: $('trfMdpIn').value });
+  }
+  function trfSurEntree(id, faire) {
+    $(id).addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); faire(); }
+    });
+  }
+  $('trfCreer').addEventListener('click', trfCreer);
+  $('trfOuvrir').addEventListener('click', trfOuvrir);
+  trfSurEntree('trfMdp', trfCreer);
+  trfSurEntree('trfMdp2', trfCreer);
+  trfSurEntree('trfMdpIn', trfOuvrir);
+  $('trfCopier').addEventListener('click', function () {
+    api.postMessage({ type: 'trfCopy', what: 'string', text: $('trfChaine').value });
+  });
+  $('trfCopierMdp').addEventListener('click', function () {
+    api.postMessage({ type: 'trfCopy', what: 'password', text: $('trfGenereMdp').textContent });
+  });
+  $('trfEnregistrer').addEventListener('click', function () {
+    api.postMessage({ type: 'trfSave', text: $('trfChaine').value });
+  });
+  $('trfImporter').addEventListener('click', function () { trfAttend($('trfImporter')); api.postMessage({ type: 'trfApply', side: 'keep' }); });
+  $('trfGarder').addEventListener('click', function () { trfAttend($('trfGarder')); api.postMessage({ type: 'trfApply', side: 'keep' }); });
+  $('trfRemplacer').addEventListener('click', function () { trfAttend($('trfRemplacer')); api.postMessage({ type: 'trfApply', side: 'replace' }); });
+  window.addEventListener('message', function (ev) {
+    var m = ev.data || {};
+    if (m.type !== 'trfReply' || !trfOuvert) return;
+    trfRepris();
+    if (m.kind === 'error') { trfErreur(m.message); return; }
+    if (m.kind === 'clip') { if (!$('trfColle').value) { $('trfColle').value = m.text; $('trfMdpIn').focus(); } return; }
+    if (m.kind === 'built') {
+      trfEtape('trfEtapeChaine', m.title);
+      $('trfTaille').textContent = m.size;
+      $('trfRates').textContent = m.failed || '';
+      $('trfRates').hidden = !m.failed;
+      $('trfChaine').value = m.text;
+      $('trfGenere').hidden = !m.password;
+      $('trfCopierMdp').hidden = !m.password;
+      $('trfGenereMdp').textContent = m.password || '';
+      $('trfMdp').value = '';
+      $('trfMdp2').value = '';
+      $('trfCopier').focus();
+    } else if (m.kind === 'preview') {
+      trfEtape('trfEtapeApercu', m.title);
+      var liste = $('trfLignes');
+      while (liste.firstChild) liste.removeChild(liste.firstChild);
+      m.lines.forEach(function (l) {
+        var li = document.createElement('li');
+        li.textContent = l;
+        liste.appendChild(li);
+      });
+      $('trfImporter').hidden = m.hasConflicts;
+      $('trfRemplacer').hidden = !m.hasConflicts;
+      $('trfGarder').hidden = !(m.hasConflicts && m.hasFresh);
+      $('trfMdpIn').value = '';
+    } else if (m.kind === 'done') {
+      trfEtape('trfEtapeFin', TRF.titleIn);
+      $('trfMessage').textContent = m.message;
+      $('trfMdpIn').value = '';
+    }
+  });
+  if (TRF.onLoad) trfOuvre(TRF.onLoad, null);
 })();
 </script></body></html>`;
   }
@@ -2926,85 +3161,20 @@ ${entries.length
 
   // ------------------------------------------------------- transfer string
   //
-  // Every key, in one line of text a password opens. The password goes through
-  // these input boxes and nowhere else: not the webview, not a command argument,
-  // nothing an assistant could read or be handed.
+  // Every key, in one line of text a password opens. All of it happens in a modal
+  // of the settings page, which answers at the click and shows its errors in place.
+  // That page is this extension's own webview: its policy allows no network, and the
+  // password goes from it to this file and nowhere else, never into a command
+  // argument, a file or anything an assistant can read.
 
-  async function transferOut() {
-    let n = 0;
-    try { n = vault.listFast().filter(k => !k.expired).length; }
-    catch (e) { return vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
-    if (!n) return vscode.window.showInformationMessage(t('The vault holds no key to transfer.'));
+  // What a correct password opened, until the person has chosen what to do with it.
+  let transferOpened = null;
+  // The palette commands reach the same modal: the page opens it when it loads.
+  let transferOnLoad = null;
 
-    const go = t('Choose a password');
-    const yes = await vscode.window.showWarningMessage(
-      t('Create a transfer string with {0} key(s)?', String(n)),
-      { modal: true,
-        detail: t('Every key leaves this vault in one line of text, protected only by the password you choose next. Anyone holding both can read them all. This will be recorded in the log.') },
-      go);
-    if (yes !== go) return;
-
-    const password = await vscode.window.showInputBox({
-      title: t('Password of the transfer string'),
-      prompt: t('It is stored nowhere and nothing can recover it. A few unrelated words make a good one.'),
-      password: true,
-      ignoreFocusOut: true,
-      validateInput: v => {
-        const bad = vault.transferPasswordIssue(v);
-        return bad ? errText(bad) : null;
-      }
-    });
-    if (!password) return;
-    const again = await vscode.window.showInputBox({
-      title: t('Confirm the password'),
-      prompt: t('Type the same password again.'),
-      password: true,
-      ignoreFocusOut: true,
-      validateInput: v => (v === password ? null : t('The two passwords differ.'))
-    });
-    if (again !== password) return;
-
-    let r;
-    try { r = await vault.transferBuild(password); }
-    catch (e) { return vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
-    notify();
-    if (r.failed.length) {
-      vscode.window.showWarningMessage(
-        t('These keys could not be decrypted and are not in the string: {0}', r.failed.join(', ')));
-    }
-
-    const copy = t('Copy the string');
-    const save = t('Save as .txt');
-    const done = t('Done');
-    for (;;) {
-      const answer = await vscode.window.showInformationMessage(
-        t('Transfer string ready: {0} key(s)', String(r.count)),
-        { modal: true,
-          detail: t('{0} characters. On the other machine, copy it, then run Import a transfer string.', String(r.text.length)) + '\n\n' +
-            t('Send the password another way than the string, and paste neither into an assistant chat. The string shows the keys as they are now: it does not follow later changes.') },
-        copy, save, done);
-      if (answer === copy) {
-        await vscode.env.clipboard.writeText(r.text);
-        vscode.window.setStatusBarMessage(t('String copied to the clipboard'), 4000);
-        continue;
-      }
-      if (answer === save) {
-        const os = require('os');
-        const target = await vscode.window.showSaveDialog({
-          defaultUri: vscode.Uri.file(path.join(os.homedir(), 'claude-vault-transfer.txt')),
-          filters: { 'Text': ['txt'] },
-          saveLabel: t('Save the string')
-        });
-        if (target) {
-          try {
-            fs.writeFileSync(target.fsPath, r.text, { encoding: 'utf8', mode: 0o600 });
-            vscode.window.setStatusBarMessage(t('String saved to {0}', target.fsPath), 4000);
-          } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
-        }
-        continue;
-      }
-      return;
-    }
+  function openTransferModal(mode) {
+    transferOnLoad = mode;
+    return showSettings();
   }
 
   // Short enough to read in a dialog, and it still says how many were left out.
@@ -3013,80 +3183,99 @@ ${entries.length
     return names.length > 12 ? t('{0} and {1} more', shown, String(names.length - 12)) : shown;
   }
 
-  async function transferIn() {
-    // Whoever is here has usually just copied it, and a long paste into a small
-    // box is the part of this that goes wrong.
-    const isString = v => { try { return vault.transferCheck(v); } catch (e) { return false; } };
-    let text = '';
-    try {
+  function transferPreviewReply(p) {
+    const lines = [t('String created {0}.', whenText(p.at))];
+    if (p.fresh.length) lines.push(t('New: {0}', namesText(p.fresh)));
+    if (p.conflicts.length) lines.push(t('Different value here: {0}', namesText(p.conflicts)));
+    if (p.same.length) lines.push(t('Already here, same value: {0}', String(p.same.length)));
+    if (p.expired.length) lines.push(t('Expired, not imported: {0}', namesText(p.expired)));
+    if (p.invalid.length) lines.push(t('Unreadable, not imported: {0}', namesText(p.invalid)));
+    if (p.mcp) lines.push(t('{0} new key(s) arrive already allowed for MCP, as on the other machine.', String(p.mcp)));
+    if (p.conflicts.length) lines.push(t('A replaced key waits {0} days in the bin.', String(vault.TRASH_DAYS)));
+    lines.push(t('This machine keeps its master key, its settings and its other keys.'));
+    return {
+      kind: 'preview', lines,
+      title: t('Import {0} key(s)?', String(p.fresh.length + p.conflicts.length)),
+      hasConflicts: p.conflicts.length > 0, hasFresh: p.fresh.length > 0
+    };
+  }
+
+  const TRANSFER_ACTIONS = {
+    async trfBuild(m) {
+      // Both fields empty: the person asked for one to be made.
+      const generated = !m.password;
+      const password = generated ? vault.transferPasswordGenerate() : String(m.password);
+      const r = await vault.transferBuild(password);
+      notify();
+      return {
+        kind: 'built', text: r.text, password: generated ? password : null,
+        title: t('Transfer string ready: {0} key(s)', String(r.count)),
+        size: t('{0} characters. On the other machine, copy it, then run Import a transfer string.', String(r.text.length)),
+        failed: r.failed.length
+          ? t('These keys could not be decrypted and are not in the string: {0}', r.failed.join(', ')) : null
+      };
+    },
+    async trfCopy(m) {
+      await vscode.env.clipboard.writeText(String(m.text || ''));
+      vscode.window.setStatusBarMessage(m.what === 'password'
+        ? t('Password copied to the clipboard') : t('String copied to the clipboard'), 4000);
+      return { kind: 'copied', what: m.what };
+    },
+    async trfSave(m) {
+      const os = require('os');
+      const target = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(path.join(os.homedir(), 'claude-vault-transfer.txt')),
+        filters: { 'Text': ['txt'] },
+        saveLabel: t('Save the string')
+      });
+      if (!target) return null;
+      fs.writeFileSync(target.fsPath, String(m.text || ''), { encoding: 'utf8', mode: 0o600 });
+      vscode.window.setStatusBarMessage(t('String saved to {0}', target.fsPath), 4000);
+      return { kind: 'saved' };
+    },
+    // Whoever is here has usually just copied it, so the field starts filled.
+    async trfClip() {
       const clip = await vscode.env.clipboard.readText();
-      if (isString(clip)) text = clip;
-    } catch (e) { /* no clipboard here: the box below does the same job */ }
-    if (!text) {
-      text = await vscode.window.showInputBox({
-        title: t('Import a transfer string'),
-        prompt: t('Paste the string, all of it. A .txt file saved earlier holds it too.'),
-        ignoreFocusOut: true,
-        validateInput: v => {
-          if (!String(v || '').trim()) return t('Paste the string, all of it. A .txt file saved earlier holds it too.');
-          try { vault.transferCheck(v); return null; } catch (e) { return errText(e); }
-        }
-      });
-      if (!text) return;
-    }
-
-    let data = null;
-    let prompt = t('The password chosen when this string was created.');
-    while (!data) {
-      const password = await vscode.window.showInputBox({
-        title: t('Password of the transfer string'),
-        prompt,
-        password: true,
-        ignoreFocusOut: true,
-        validateInput: v => (v ? null : t('Enter the password.'))
-      });
-      if (!password) return;
-      try { data = await vault.transferOpen(text, password); }
-      catch (e) {
-        if (!e.wrongPassword) return vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e)));
-        prompt = errText(e);
-      }
-    }
-
-    try {
+      try { vault.transferCheck(clip); } catch (e) { return null; }
+      return { kind: 'clip', text: clip };
+    },
+    async trfOpen(m) {
+      transferOpened = null;
+      const data = await vault.transferOpen(String(m.text || ''), String(m.password || ''));
       const p = vault.transferPreview(data);
       if (!p.fresh.length && !p.conflicts.length) {
-        return vscode.window.showInformationMessage(
-          t('Nothing to import: the {0} key(s) of this string are already here with the same value.', String(p.same.length)));
+        return { kind: 'done', message: t('Nothing to import: the {0} key(s) of this string are already here with the same value.', String(p.same.length)) };
       }
-      const lines = [t('String created {0}.', whenText(p.at))];
-      if (p.fresh.length) lines.push(t('New: {0}', namesText(p.fresh)));
-      if (p.conflicts.length) lines.push(t('Different value here: {0}', namesText(p.conflicts)));
-      if (p.same.length) lines.push(t('Already here, same value: {0}', String(p.same.length)));
-      if (p.expired.length) lines.push(t('Expired, not imported: {0}', namesText(p.expired)));
-      if (p.invalid.length) lines.push(t('Unreadable, not imported: {0}', namesText(p.invalid)));
-      if (p.mcp) lines.push(t('{0} new key(s) arrive already allowed for MCP, as on the other machine.', String(p.mcp)));
-      if (p.conflicts.length) {
-        lines.push(t('A replaced key waits {0} days in the bin.', String(vault.TRASH_DAYS)));
-      }
-      lines.push(t('This machine keeps its master key, its settings and its other keys.'));
-
-      const keep = t('Keep the ones here');
-      const replace = t('Use the ones from the string');
-      const go = t('Import');
-      const boutons = p.conflicts.length ? (p.fresh.length ? [keep, replace] : [replace]) : [go];
-      const answer = await vscode.window.showWarningMessage(
-        t('Import {0} key(s)?', String(p.fresh.length + p.conflicts.length)),
-        { modal: true, detail: lines.join('\n\n') },
-        ...boutons);
-      if (!answer) return;
-
-      const r = vault.transferApply(data, answer === replace ? 'replace' : 'keep');
+      transferOpened = data;
+      return transferPreviewReply(p);
+    },
+    async trfApply(m) {
+      if (!transferOpened) return { kind: 'error', message: t('this transfer string holds no keys') };
+      const r = vault.transferApply(transferOpened, m.side === 'replace' ? 'replace' : 'keep');
+      transferOpened = null;
       notify();
-      vscode.window.showInformationMessage(
-        t('Transfer done: {0} added, {1} replaced, {2} kept as they were.',
-          String(r.added), String(r.replaced), String(r.kept + r.same)));
-    } catch (e) { vscode.window.showErrorMessage(t('Claude Vault: {0}', errText(e))); }
+      return {
+        kind: 'done',
+        message: t('Transfer done: {0} added, {1} replaced, {2} kept as they were.',
+          String(r.added), String(r.replaced), String(r.kept + r.same))
+      };
+    },
+    // Only now does the page redraw: doing it earlier would take the modal with it.
+    async trfClose() {
+      transferOpened = null;
+      if (settingsPanel) settingsPanel.webview.html = settingsHtml();
+      return null;
+    }
+  };
+
+  // Every answer goes back to the page, the failures included: a promise rejected
+  // with nobody listening is a button that seems to do nothing.
+  async function transferMessage(m) {
+    const reply = r => {
+      if (r && settingsPanel) settingsPanel.webview.postMessage(Object.assign({ type: 'trfReply' }, r));
+    };
+    try { reply(await TRANSFER_ACTIONS[m.type](m)); }
+    catch (e) { reply({ kind: 'error', message: errText(e) }); }
   }
 
   // -------------------------------------------------- markers in the editor
@@ -3480,8 +3669,8 @@ ${entries.length
     vscode.commands.registerCommand('claudeVault.recoveryRestore', recoveryRestoreFlow),
     vscode.commands.registerCommand('claudeVault.recoveryShow', recoveryShowFlow),
     vscode.commands.registerCommand('claudeVault.recoveryHistory', recoveryHistoryFlow),
-    vscode.commands.registerCommand('claudeVault.transferOut', transferOut),
-    vscode.commands.registerCommand('claudeVault.transferIn', transferIn),
+    vscode.commands.registerCommand('claudeVault.transferOut', () => openTransferModal('out')),
+    vscode.commands.registerCommand('claudeVault.transferIn', () => openTransferModal('in')),
     vscode.commands.registerCommand('claudeVault.newGroup', newGroup),
     vscode.commands.registerCommand('claudeVault.newSeparator', newSeparator),
     vscode.commands.registerCommand('claudeVault.setGroup', setGroup),

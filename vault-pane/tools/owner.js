@@ -7,12 +7,12 @@
 //   node owner.js --window ACTION [ARG]   opens the action in a window and waits
 //
 // ACTION: replace NAME, mcp-request ID, use ID, delete NAME, mcp NAME, bin, phrase,
-// restore. These are the decisions that are the owner's alone, so they run only at
+// phrase-show, phrase-history, restore, transfer-out, transfer-in. These are the decisions that are the owner's alone, so they run only at
 // a real console, and ask there: a command Claude runs has none, so it cannot answer
 // its own request. The extension draws the same decisions in its modal dialogs.
 'use strict';
 const path = require('path');
-const { BRIDGE, isFrench, reopenInWindow, askLine, askHidden } = require('./console.js');
+const { BRIDGE, isFrench, reopenInWindow, askLine, askHidden, copy, paste } = require('./console.js');
 const actions = require('./owner-actions.js');
 
 const T = isFrench ? actions.TEXTS.fr : actions.TEXTS.en;
@@ -25,7 +25,11 @@ const HUMAN = {
   mcp: actions.mcpKey,
   bin: actions.bin,
   phrase: actions.phrase,
+  'phrase-show': actions.phraseDisplay,
+  'phrase-history': actions.phraseHistory,
   restore: actions.restore,
+  'transfer-out': actions.transferOut,
+  'transfer-in': actions.transferIn,
 };
 const HAS_ARGUMENT = new Set(['replace', 'mcp-request', 'use', 'delete', 'mcp']);
 const ARGUMENT_RE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -82,6 +86,7 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 }
 
 async function main() {
+  let isCleared = false;
   const context = {
     vault: loadVault(),
     wrap: () => require(path.join(__dirname, '..', 'bridge', 'install.js')).wrapMcpServers(),
@@ -90,7 +95,9 @@ async function main() {
       say: line => process.stdout.write(line + '\n'),
       ask: askLine,
       askHidden,
-      clear: () => console.clear(),
+      copy,
+      paste,
+      clear: () => { console.clear(); isCleared = true; },
     },
   };
   let code = 0;
@@ -102,7 +109,7 @@ async function main() {
     code = 1;
   }
   // A phrase just shown has been cleared; anything else stays readable until Enter.
-  if (action !== 'phrase') await askLine(isFrench ? '\nEntrée pour fermer.' : '\nEnter to close.');
+  if (!isCleared) await askLine('\n' + T.enterClose);
   return code;
 }
 

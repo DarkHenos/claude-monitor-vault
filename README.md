@@ -14,7 +14,7 @@ local files. Your familiar Claude Monitor & Vault now includes optional Codex su
  · [User guide](docs/GUIDE.md) · [Release notes](CHANGELOG.md)
  · [Report an issue](https://github.com/DarkHenos/claude-monitor-vault/issues)
 
-**Version 1.3.0** · VS Code 1.106+ · IntelliJ IDEA and other JetBrains IDEs 2023.1+
+**Version 1.3.1** · VS Code 1.106+ · IntelliJ IDEA and other JetBrains IDEs 2023.1+
 ([beta](#intellij-idea-and-other-jetbrains-ides-beta)) · Windows, macOS and Linux ·
 English, French, Spanish, German and Portuguese.
 

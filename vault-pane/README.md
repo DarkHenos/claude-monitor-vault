@@ -29,7 +29,8 @@ In Claude Desktop, where `/plugin` does not run: click **+** next to the prompt 
 - Search the keys and sort them by name above the list.
 - What Claude asks of you appears at the top under **To approve**: **Review** opens the window to decide, **Refuse** answers at once.
 - Each key has **MCP** and **Delete**; a deleted key waits 30 days in the bin.
-- Under **Vault**, create your recovery phrase, restore a vault with it, or open the bin. Without a phrase the pane says so: if this computer's key is lost, your keys are lost with it.
+- Under **Vault**, create your recovery phrase, generate a new one without giving the old one, show it again, go through the phrase history, restore a vault with it, or open the bin. Without a phrase the pane says so: if this computer's key is lost, your keys are lost with it.
+- **Create a transfer string** puts every key in one long line of text, encrypted with a password you choose, for the clipboard or a file. **Import a string** reads it from the clipboard or a file on the other machine, shows what would change, and adds the keys to the ones already there.
 - The pane opens with each session, docked beside the chat when the window is wide enough.
 - A bar sits above the prompt. The name opens the side panel while it is closed; next to it, **Insert a key ▾** opens a search field over your keys (click one, or press Enter for the first match, to insert its marker in your message), **+** creates a key right there, without opening the panel, and what waits for your approval shows. The quotas sit at the right with their reset times. `/vault` opens the pane too.
 - Hide or show that bar from the bottom of the pane.
@@ -48,13 +49,13 @@ An older extension's bridge is left alone: the pane says so and offers **Update 
 
 ## Without the extension
 
-Everything needed to run the vault works: markers, the guard on vault files, listing and creating keys, approving or refusing what Claude asks (a replacement, MCP access, a use of a key that asks every time), deleting a key and bringing it back from the bin, MCP access by key, and the recovery phrase.
+Everything needed to run the vault works: markers, the guard on vault files, listing and creating keys, approving or refusing what Claude asks (a replacement, MCP access, a use of a key that asks every time), deleting a key and bringing it back from the bin, MCP access by key, the recovery phrase and its history, and the transfer string.
 
-Still in the extension only: revealing a value, the access log, renaming keys, organising groups, export and import.
+Still in the extension only: revealing a value, the access log, renaming keys, organising groups, the backup file.
 
 ## Who decides
 
-Approving a request, deleting a key, changing a key's MCP access and the recovery phrase are the owner's alone. The pane only opens a window for them; that window shows what is at stake, read from the vault, and asks you to answer there. The tools refuse to act without a real console, so a command run by Claude cannot answer its own request, and the mod denies Claude's shell commands that name its tools or its copy of the bridge. A refusal needs no window, since it gives nothing away.
+Approving a request, deleting a key, changing a key's MCP access, the recovery phrase and the transfer string are the owner's alone. The password of a string and the words of a phrase stay in that window. The pane only opens a window for them; that window shows what is at stake, read from the vault, and asks you to answer there. The tools refuse to act without a real console, so a command run by Claude cannot answer its own request, and the mod denies Claude's shell commands that name its tools or its copy of the bridge. A refusal needs no window, since it gives nothing away.
 
 This holds Claude to the same rules as the extension's guard does. It is not a wall against a program that runs on your account with intent to get around it: nothing running as you can be kept from your own files.
 
